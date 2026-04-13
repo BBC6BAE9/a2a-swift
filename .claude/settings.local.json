@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git commit:*)",
+      "Bash(git add:*)",
+      "Bash(mkdir -p Sources/A2A)",
+      "Bash(cp -r Core/* Sources/A2A/)",
+      "Bash(cp -r Client/* Sources/A2A/)",
+      "Bash(swift package:*)",
+      "Bash(swift test:*)",
+      "Bash(rm:*)",
+      "Bash(swift build:*)"
+    ]
+  }
+}
