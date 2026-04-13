@@ -16,30 +16,59 @@ import Foundation
 
 // MARK: - Part
 
-/// Represents a distinct piece of content within an ``A2AMessage`` or ``Artifact``.
+/// Represents a container for a section of communication content.
 ///
-/// A ``Part`` can be text, a file reference, or structured data. The `kind` field
-/// acts as a discriminator to determine the specific type of the content part.
+/// Parts can be purely textual, a file (image, video, etc.) or a structured
+/// data blob (e.g. JSON). The content is a discriminated union with four cases:
+/// `text`, `raw` (base64-encoded bytes), `url` (URI to file content), or `data`
+/// (arbitrary JSON value). Top-level `filename` and `mediaType` fields apply to
+/// any part type.
 ///
-/// Mirrors Dart `Part` (freezed union) in `a2a/core/part.dart`.
+/// Matches the proto3 `Part` message in `specification/a2a.proto`.
 public enum Part: Codable, Sendable, Equatable {
 
     /// A plain text content part.
-    case text(text: String, metadata: JSONObject? = nil)
+    case text(
+        text: String,
+        filename: String? = nil,
+        mediaType: String? = nil,
+        metadata: JSONObject? = nil
+    )
 
-    /// A file content part.
-    case file(file: FileContent, metadata: JSONObject? = nil)
+    /// A raw binary content part. The payload is base64-encoded in JSON.
+    case raw(
+        raw: Data,
+        filename: String? = nil,
+        mediaType: String? = nil,
+        metadata: JSONObject? = nil
+    )
 
-    /// A structured JSON data content part.
-    case data(data: JSONObject, metadata: JSONObject? = nil)
+    /// A URL pointing to the file's content.
+    case url(
+        url: String,
+        filename: String? = nil,
+        mediaType: String? = nil,
+        metadata: JSONObject? = nil
+    )
+
+    /// Arbitrary structured JSON data (object, array, string, number, bool, or null).
+    case data(
+        data: AnyCodable,
+        filename: String? = nil,
+        mediaType: String? = nil,
+        metadata: JSONObject? = nil
+    )
 
     // MARK: - CodingKeys
 
     private enum CodingKeys: String, CodingKey {
         case kind
         case text
-        case file
+        case raw
+        case url
         case data
+        case filename
+        case mediaType
         case metadata
     }
 
@@ -48,22 +77,26 @@ public enum Part: Codable, Sendable, Equatable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let kind = try container.decode(String.self, forKey: .kind)
+        let filename = try container.decodeIfPresent(String.self, forKey: .filename)
+        let mediaType = try container.decodeIfPresent(String.self, forKey: .mediaType)
+        let metadata = try container.decodeIfPresent(JSONObject.self, forKey: .metadata)
 
         switch kind {
         case "text":
             let text = try container.decode(String.self, forKey: .text)
-            let metadata = try container.decodeIfPresent(JSONObject.self, forKey: .metadata)
-            self = .text(text: text, metadata: metadata)
+            self = .text(text: text, filename: filename, mediaType: mediaType, metadata: metadata)
 
-        case "file":
-            let file = try container.decode(FileContent.self, forKey: .file)
-            let metadata = try container.decodeIfPresent(JSONObject.self, forKey: .metadata)
-            self = .file(file: file, metadata: metadata)
+        case "raw":
+            let raw = try container.decode(Data.self, forKey: .raw)
+            self = .raw(raw: raw, filename: filename, mediaType: mediaType, metadata: metadata)
+
+        case "url":
+            let url = try container.decode(String.self, forKey: .url)
+            self = .url(url: url, filename: filename, mediaType: mediaType, metadata: metadata)
 
         case "data":
-            let data = try container.decode(JSONObject.self, forKey: .data)
-            let metadata = try container.decodeIfPresent(JSONObject.self, forKey: .metadata)
-            self = .data(data: data, metadata: metadata)
+            let data = try container.decode(AnyCodable.self, forKey: .data)
+            self = .data(data: data, filename: filename, mediaType: mediaType, metadata: metadata)
 
         default:
             throw DecodingError.dataCorruptedError(
@@ -80,91 +113,33 @@ public enum Part: Codable, Sendable, Equatable {
         var container = encoder.container(keyedBy: CodingKeys.self)
 
         switch self {
-        case .text(let text, let metadata):
+        case .text(let text, let filename, let mediaType, let metadata):
             try container.encode("text", forKey: .kind)
             try container.encode(text, forKey: .text)
+            try container.encodeIfPresent(filename, forKey: .filename)
+            try container.encodeIfPresent(mediaType, forKey: .mediaType)
             try container.encodeIfPresent(metadata, forKey: .metadata)
 
-        case .file(let file, let metadata):
-            try container.encode("file", forKey: .kind)
-            try container.encode(file, forKey: .file)
+        case .raw(let raw, let filename, let mediaType, let metadata):
+            try container.encode("raw", forKey: .kind)
+            try container.encode(raw, forKey: .raw)
+            try container.encodeIfPresent(filename, forKey: .filename)
+            try container.encodeIfPresent(mediaType, forKey: .mediaType)
             try container.encodeIfPresent(metadata, forKey: .metadata)
 
-        case .data(let data, let metadata):
+        case .url(let url, let filename, let mediaType, let metadata):
+            try container.encode("url", forKey: .kind)
+            try container.encode(url, forKey: .url)
+            try container.encodeIfPresent(filename, forKey: .filename)
+            try container.encodeIfPresent(mediaType, forKey: .mediaType)
+            try container.encodeIfPresent(metadata, forKey: .metadata)
+
+        case .data(let data, let filename, let mediaType, let metadata):
             try container.encode("data", forKey: .kind)
             try container.encode(data, forKey: .data)
+            try container.encodeIfPresent(filename, forKey: .filename)
+            try container.encodeIfPresent(mediaType, forKey: .mediaType)
             try container.encodeIfPresent(metadata, forKey: .metadata)
-        }
-    }
-}
-
-// MARK: - FileContent
-
-/// Represents file data, used within a ``Part/file`` part.
-///
-/// The file content can be provided either as a URI pointing to the file or
-/// directly as base64-encoded bytes.
-///
-/// Named `FileContent` to avoid conflict with Dart `FileType` and Swift `FileType`.
-///
-/// Mirrors Dart `FileType` (freezed union) in `a2a/core/part.dart`.
-public enum FileContent: Codable, Sendable, Equatable {
-
-    /// A file located at a specific URI.
-    case uri(uri: String, name: String? = nil, mimeType: String? = nil)
-
-    /// A file with its content embedded as a base64-encoded string.
-    case bytes(bytes: String, name: String? = nil, mimeType: String? = nil)
-
-    // MARK: - CodingKeys
-
-    private enum CodingKeys: String, CodingKey {
-        case uri
-        case bytes
-        case name
-        case mimeType
-    }
-
-    // MARK: - Decodable
-
-    /// Decodes a ``FileContent`` from JSON.
-    ///
-    /// Follows the same fallback logic as the Dart `FileType.fromJson`:
-    /// if `bytes` key is present → `.bytes`; if `uri` key is present → `.uri`.
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let name = try container.decodeIfPresent(String.self, forKey: .name)
-        let mimeType = try container.decodeIfPresent(String.self, forKey: .mimeType)
-
-        if let bytes = try container.decodeIfPresent(String.self, forKey: .bytes) {
-            self = .bytes(bytes: bytes, name: name, mimeType: mimeType)
-        } else if let uri = try container.decodeIfPresent(String.self, forKey: .uri) {
-            self = .uri(uri: uri, name: name, mimeType: mimeType)
-        } else {
-            throw DecodingError.dataCorrupted(
-                DecodingError.Context(
-                    codingPath: decoder.codingPath,
-                    debugDescription: "FileContent must contain either 'uri' or 'bytes'"
-                )
-            )
-        }
-    }
-
-    // MARK: - Encodable
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-
-        switch self {
-        case .uri(let uri, let name, let mimeType):
-            try container.encode(uri, forKey: .uri)
-            try container.encodeIfPresent(name, forKey: .name)
-            try container.encodeIfPresent(mimeType, forKey: .mimeType)
-
-        case .bytes(let bytes, let name, let mimeType):
-            try container.encode(bytes, forKey: .bytes)
-            try container.encodeIfPresent(name, forKey: .name)
-            try container.encodeIfPresent(mimeType, forKey: .mimeType)
         }
     }
 }

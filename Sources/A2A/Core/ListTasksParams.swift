@@ -21,7 +21,7 @@ import Foundation
 /// These parameters allow clients to filter, paginate, and control the scope
 /// of the task list returned by the server.
 ///
-/// Mirrors Dart `ListTasksParams` in `a2a/core/list_tasks_params.dart`.
+/// Matches the proto3 `ListTasksRequest` message in `specification/a2a.proto`.
 public struct ListTasksParams: Codable, Sendable, Equatable {
 
     /// Optional. Filter tasks by context ID.
@@ -41,15 +41,16 @@ public struct ListTasksParams: Codable, Sendable, Equatable {
     /// Defaults to 0.
     public let historyLength: Int
 
-    /// Optional. Filter tasks updated at or after this timestamp (ms since epoch).
-    public let lastUpdatedAfter: Int?
+    /// Optional. Filter tasks with a status updated at or after this timestamp.
+    ///
+    /// Must be an ISO 8601 / RFC 3339 timestamp string, e.g.
+    /// `"2023-10-27T10:00:00Z"`.  Only tasks whose status timestamp is
+    /// greater than or equal to this value will be returned.
+    public let statusTimestampAfter: String?
 
     /// Whether to include associated artifacts in the returned tasks.
     /// Defaults to `false`.
     public let includeArtifacts: Bool
-
-    /// Optional. Request-specific metadata for extensions.
-    public let metadata: JSONObject?
 
     public init(
         contextId: String? = nil,
@@ -57,17 +58,15 @@ public struct ListTasksParams: Codable, Sendable, Equatable {
         pageSize: Int = 50,
         pageToken: String? = nil,
         historyLength: Int = 0,
-        lastUpdatedAfter: Int? = nil,
-        includeArtifacts: Bool = false,
-        metadata: JSONObject? = nil
+        statusTimestampAfter: String? = nil,
+        includeArtifacts: Bool = false
     ) {
         self.contextId = contextId
         self.status = status
         self.pageSize = pageSize
         self.pageToken = pageToken
         self.historyLength = historyLength
-        self.lastUpdatedAfter = lastUpdatedAfter
+        self.statusTimestampAfter = statusTimestampAfter
         self.includeArtifacts = includeArtifacts
-        self.metadata = metadata
     }
 }

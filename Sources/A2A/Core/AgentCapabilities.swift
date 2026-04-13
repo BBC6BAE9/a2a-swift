@@ -20,9 +20,9 @@ import Foundation
 ///
 /// This struct is part of the ``AgentCard`` and allows an agent to advertise
 /// its capabilities to clients, such as support for streaming, push
-/// notifications, and custom protocol extensions.
+/// notifications, extended agent cards, and custom protocol extensions.
 ///
-/// Mirrors Dart `AgentCapabilities` in `a2a/core/agent_capabilities.dart`.
+/// Matches the proto3 `AgentCapabilities` message in `specification/a2a.proto`.
 public struct AgentCapabilities: Codable, Sendable, Equatable {
 
     /// Indicates if the agent supports streaming responses, typically via
@@ -33,9 +33,9 @@ public struct AgentCapabilities: Codable, Sendable, Equatable {
     /// asynchronous task updates to a client-specified endpoint.
     public let pushNotifications: Bool?
 
-    /// Indicates if the agent maintains and can provide a history of state
-    /// transitions for tasks.
-    public let stateTransitionHistory: Bool?
+    /// Indicates if the agent supports providing an extended agent card when
+    /// authenticated (via the `/extendedAgentCard` endpoint).
+    public let extendedAgentCard: Bool?
 
     /// A list of non-standard protocol extensions supported by the agent.
     public let extensions: [AgentExtension]?
@@ -43,12 +43,12 @@ public struct AgentCapabilities: Codable, Sendable, Equatable {
     public init(
         streaming: Bool? = nil,
         pushNotifications: Bool? = nil,
-        stateTransitionHistory: Bool? = nil,
+        extendedAgentCard: Bool? = nil,
         extensions: [AgentExtension]? = nil
     ) {
         self.streaming = streaming
         self.pushNotifications = pushNotifications
-        self.stateTransitionHistory = stateTransitionHistory
+        self.extendedAgentCard = extendedAgentCard
         self.extensions = extensions
     }
 }

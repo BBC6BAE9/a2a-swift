@@ -14,55 +14,27 @@
 
 import Foundation
 
-// MARK: - PushNotificationConfig
+// MARK: - AuthenticationInfo
 
-/// Defines the configuration for setting up push notifications for task updates.
+/// Defines authentication details, used for push notification endpoints.
 ///
-/// Mirrors Dart `PushNotificationConfig` in `a2a/core/push_notification.dart`.
-public struct PushNotificationConfig: Codable, Sendable, Equatable {
-
-    /// A unique identifier (e.g. UUID) for the push notification configuration.
-    public let id: String?
-
-    /// The callback URL where the agent should send push notifications.
-    public let url: String
-
-    /// A unique token for this task or session to validate incoming push
-    /// notifications.
-    public let token: String?
-
-    /// Optional authentication details for the agent to use when calling the
-    /// notification URL.
-    public let authentication: PushNotificationAuthenticationInfo?
-
-    public init(
-        id: String? = nil,
-        url: String,
-        token: String? = nil,
-        authentication: PushNotificationAuthenticationInfo? = nil
-    ) {
-        self.id = id
-        self.url = url
-        self.token = token
-        self.authentication = authentication
-    }
-}
-
-// MARK: - PushNotificationAuthenticationInfo
-
-/// Defines authentication details for a push notification endpoint.
+/// The `scheme` is a single HTTP Authentication Scheme name from the
+/// [IANA registry](https://www.iana.org/assignments/http-authschemes/)
+/// (e.g. `"Bearer"`, `"Basic"`, `"Digest"`). Scheme names are
+/// case-insensitive per RFC 9110 §11.1.
 ///
-/// Mirrors Dart `PushNotificationAuthenticationInfo` in `a2a/core/push_notification.dart`.
-public struct PushNotificationAuthenticationInfo: Codable, Sendable, Equatable {
+/// Matches the proto3 `AuthenticationInfo` message in `specification/a2a.proto`.
+public struct AuthenticationInfo: Codable, Sendable, Equatable {
 
-    /// A list of supported authentication schemes (e.g., "Basic", "Bearer").
-    public let schemes: [String]
+    /// HTTP Authentication Scheme (e.g., `"Bearer"`, `"Basic"`, `"Digest"`).
+    public let scheme: String
 
-    /// Optional credentials required by the push notification endpoint.
+    /// Push Notification credentials. Format depends on the scheme
+    /// (e.g., a token string for Bearer).
     public let credentials: String?
 
-    public init(schemes: [String], credentials: String? = nil) {
-        self.schemes = schemes
+    public init(scheme: String, credentials: String? = nil) {
+        self.scheme = scheme
         self.credentials = credentials
     }
 }
@@ -71,17 +43,50 @@ public struct PushNotificationAuthenticationInfo: Codable, Sendable, Equatable {
 
 /// A container associating a push notification configuration with a specific task.
 ///
-/// Mirrors Dart `TaskPushNotificationConfig` in `a2a/core/push_notification.dart`.
+/// Matches the proto3 `TaskPushNotificationConfig` message in
+/// `specification/a2a.proto`.
 public struct TaskPushNotificationConfig: Codable, Sendable, Equatable {
 
-    /// The unique identifier (e.g. UUID) of the task.
+    /// Optional. Tenant ID.
+    public let tenant: String?
+
+    /// A unique identifier (e.g. UUID) for this push notification configuration.
+    public let id: String?
+
+    /// The unique identifier (e.g. UUID) of the task this config is associated with.
     public let taskId: String
 
-    /// The push notification configuration for this task.
-    public let pushNotificationConfig: PushNotificationConfig
+    /// The callback URL where the agent should send push notifications.
+    public let url: String
 
-    public init(taskId: String, pushNotificationConfig: PushNotificationConfig) {
+    /// A unique token for this task or session to validate incoming push notifications.
+    public let token: String?
+
+    /// Optional authentication details for the agent to use when calling the
+    /// notification URL.
+    public let authentication: AuthenticationInfo?
+
+    public init(
+        tenant: String? = nil,
+        id: String? = nil,
+        taskId: String,
+        url: String,
+        token: String? = nil,
+        authentication: AuthenticationInfo? = nil
+    ) {
+        self.tenant = tenant
+        self.id = id
         self.taskId = taskId
-        self.pushNotificationConfig = pushNotificationConfig
+        self.url = url
+        self.token = token
+        self.authentication = authentication
     }
 }
+
+// MARK: - PushNotificationConfig (deprecated alias)
+
+/// Backward-compatible type alias for push notification configuration.
+///
+/// New code should use ``TaskPushNotificationConfig`` directly.
+@available(*, deprecated, renamed: "TaskPushNotificationConfig")
+public typealias PushNotificationConfig = TaskPushNotificationConfig

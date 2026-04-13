@@ -14,41 +14,49 @@
 
 import Foundation
 
-// MARK: - TransportProtocol
-
-/// Supported A2A transport protocols.
-///
-/// Mirrors Dart `TransportProtocol` enum in `a2a/core/agent_interface.dart`.
-public enum TransportProtocol: String, Codable, Sendable, Equatable {
-    /// JSON-RPC 2.0 over HTTP.
-    case jsonrpc = "JSONRPC"
-
-    /// gRPC over HTTP/2.
-    case grpc = "GRPC"
-
-    /// REST-style HTTP with JSON.
-    case httpJson = "HTTP+JSON"
-}
-
 // MARK: - AgentInterface
 
-/// Declares a combination of a target URL and a transport protocol for
-/// interacting with an agent.
+/// Declares a combination of a target URL, transport binding, and protocol
+/// version for interacting with an agent.
 ///
 /// Part of the ``AgentCard``, this allows an agent to expose the same
-/// functionality over multiple transport mechanisms.
+/// functionality over multiple protocol binding mechanisms (e.g. JSONRPC,
+/// GRPC, HTTP+JSON).
 ///
-/// Mirrors Dart `AgentInterface` in `a2a/core/agent_interface.dart`.
+/// The ``protocolBinding`` field is an open string so that future or custom
+/// bindings can be declared without requiring a source change.
+///
+/// Matches the proto3 `AgentInterface` message in `specification/a2a.proto`.
 public struct AgentInterface: Codable, Sendable, Equatable {
 
-    /// The URL where this interface is available.
+    /// The URL where this interface is available. Must be a valid absolute
+    /// HTTPS URL in production.
+    /// Example: `"https://api.example.com/a2a/v1"`
     public let url: String
 
-    /// The transport protocol supported at this URL.
-    public let transport: TransportProtocol
+    /// The protocol binding supported at this URL.
+    ///
+    /// Core values: `"JSONRPC"`, `"GRPC"`, `"HTTP+JSON"`. The field is an
+    /// open string so that extended or custom bindings can be declared.
+    public let protocolBinding: String
 
-    public init(url: String, transport: TransportProtocol) {
+    /// Optional tenant ID to be used in the request path when calling the agent.
+    public let tenant: String?
+
+    /// The version of the A2A protocol this interface exposes.
+    /// Use the latest supported minor version per major version.
+    /// Examples: `"0.3"`, `"1.0"`
+    public let protocolVersion: String
+
+    public init(
+        url: String,
+        protocolBinding: String,
+        tenant: String? = nil,
+        protocolVersion: String
+    ) {
         self.url = url
-        self.transport = transport
+        self.protocolBinding = protocolBinding
+        self.tenant = tenant
+        self.protocolVersion = protocolVersion
     }
 }

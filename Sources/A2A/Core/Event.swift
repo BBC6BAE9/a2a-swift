@@ -16,34 +16,39 @@ import Foundation
 
 // MARK: - A2AEvent
 
-/// Represents an event received from the server, typically during a stream.
+/// Represents a single event received from the agent, typically during a stream.
 ///
-/// This is a discriminated union based on the `kind` field, using kebab-case
-/// values. It's used by the client to handle various types of updates from the
-/// server in a type-safe way.
+/// This is a discriminated union based on the `kind` field. It maps to the
+/// proto3 `StreamResponse` oneof (and reuses the `SendMessageResponse` oneof
+/// for non-streaming responses that emit `.task` or `.message`).
+///
+/// Payload kinds:
+/// - `"task"` — a full task snapshot (``A2ATask``)
+/// - `"message"` — a standalone message from the agent (``A2AMessage``)
+/// - `"task-status-update"` — a partial status update for an ongoing task
+/// - `"artifact-update"` — a new or appended artifact for a task
 ///
 /// Named `A2AEvent` to avoid conflict with SwiftUI/AppKit `Event` types.
 ///
-/// Mirrors Dart `Event` (sealed class) in `a2a/core/events.dart`.
+/// Matches the proto3 `StreamResponse` / `SendMessageResponse` oneofs in
+/// `specification/a2a.proto`.
 public enum A2AEvent: Codable, Sendable, Equatable {
 
-    /// Indicates an update to the task's status.
-    case statusUpdate(
-        taskId: String,
-        contextId: String,
-        status: TaskStatus,
-        isFinal: Bool = false
-    )
+    /// A full task snapshot sent by the agent.
+    case task(A2ATask)
 
-    /// Indicates an update to the task's status in a streaming context.
+    /// A standalone message from the agent (no associated task).
+    case message(A2AMessage)
+
+    /// An update to the task's status in a streaming context.
     case taskStatusUpdate(
         taskId: String,
         contextId: String,
         status: TaskStatus,
-        isFinal: Bool = false
+        isFinal: Bool
     )
 
-    /// Indicates a new or updated artifact related to the task.
+    /// A new or updated artifact related to the task.
     case artifactUpdate(
         taskId: String,
         contextId: String,
@@ -72,12 +77,11 @@ public enum A2AEvent: Codable, Sendable, Equatable {
         let kind = try container.decode(String.self, forKey: .kind)
 
         switch kind {
-        case "status-update":
-            let taskId = try container.decode(String.self, forKey: .taskId)
-            let contextId = try container.decode(String.self, forKey: .contextId)
-            let status = try container.decode(TaskStatus.self, forKey: .status)
-            let isFinal = try container.decodeIfPresent(Bool.self, forKey: .isFinal) ?? false
-            self = .statusUpdate(taskId: taskId, contextId: contextId, status: status, isFinal: isFinal)
+        case "task":
+            self = .task(try A2ATask(from: decoder))
+
+        case "message":
+            self = .message(try A2AMessage(from: decoder))
 
         case "task-status-update":
             let taskId = try container.decode(String.self, forKey: .taskId)
@@ -90,8 +94,8 @@ public enum A2AEvent: Codable, Sendable, Equatable {
             let taskId = try container.decode(String.self, forKey: .taskId)
             let contextId = try container.decode(String.self, forKey: .contextId)
             let artifact = try container.decode(Artifact.self, forKey: .artifact)
-            let append = try container.decode(Bool.self, forKey: .append)
-            let lastChunk = try container.decode(Bool.self, forKey: .lastChunk)
+            let append = try container.decodeIfPresent(Bool.self, forKey: .append) ?? false
+            let lastChunk = try container.decodeIfPresent(Bool.self, forKey: .lastChunk) ?? false
             self = .artifactUpdate(taskId: taskId, contextId: contextId, artifact: artifact, append: append, lastChunk: lastChunk)
 
         default:
@@ -109,12 +113,13 @@ public enum A2AEvent: Codable, Sendable, Equatable {
         var container = encoder.container(keyedBy: CodingKeys.self)
 
         switch self {
-        case .statusUpdate(let taskId, let contextId, let status, let isFinal):
-            try container.encode("status-update", forKey: .kind)
-            try container.encode(taskId, forKey: .taskId)
-            try container.encode(contextId, forKey: .contextId)
-            try container.encode(status, forKey: .status)
-            try container.encode(isFinal, forKey: .isFinal)
+        case .task(let taskObj):
+            try container.encode("task", forKey: .kind)
+            try taskObj.encode(to: encoder)
+
+        case .message(let msg):
+            try container.encode("message", forKey: .kind)
+            try msg.encode(to: encoder)
 
         case .taskStatusUpdate(let taskId, let contextId, let status, let isFinal):
             try container.encode("task-status-update", forKey: .kind)

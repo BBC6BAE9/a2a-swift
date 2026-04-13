@@ -24,11 +24,12 @@ import Foundation
 /// clients to understand how to interact with the agent, typically served from
 /// `/.well-known/agent-card.json`.
 ///
-/// Mirrors Dart `AgentCard` in `a2a/core/agent_card.dart`.
+/// The ``supportedInterfaces`` list is ordered — the first entry is the
+/// preferred interface. This replaces the older `url` + `preferredTransport`
+/// + `additionalInterfaces` pattern.
+///
+/// Matches the proto3 `AgentCard` message in `specification/a2a.proto`.
 public struct AgentCard: Codable, Sendable, Equatable {
-
-    /// The version of the A2A protocol that this agent implements.
-    public let protocolVersion: String
 
     /// A human-readable name for the agent.
     public let name: String
@@ -37,17 +38,8 @@ public struct AgentCard: Codable, Sendable, Equatable {
     /// functionality.
     public let description: String
 
-    /// The primary endpoint URL for interacting with the agent.
-    public let url: String
-
-    /// The transport protocol used by the primary endpoint specified in ``url``.
-    public let preferredTransport: TransportProtocol?
-
-    /// A list of alternative interfaces the agent supports.
-    public let additionalInterfaces: [AgentInterface]?
-
-    /// An optional URL pointing to an icon representing the agent.
-    public let iconUrl: String?
+    /// Ordered list of supported interfaces. The first entry is preferred.
+    public let supportedInterfaces: [AgentInterface]
 
     /// Information about the entity providing the agent service.
     public let provider: AgentProvider?
@@ -66,7 +58,7 @@ public struct AgentCard: Codable, Sendable, Equatable {
     public let securitySchemes: [String: SecurityScheme]?
 
     /// A list of security requirements that apply globally to all interactions.
-    public let security: [[String: [String]]]?
+    public let securityRequirements: [[String: [String]]]?
 
     /// Default set of supported input MIME types for all skills.
     public let defaultInputModes: [String]
@@ -77,45 +69,83 @@ public struct AgentCard: Codable, Sendable, Equatable {
     /// The set of skills (distinct functionalities) that the agent can perform.
     public let skills: [AgentSkill]
 
-    /// Indicates whether the agent can provide an extended agent card with
-    /// potentially more details to authenticated users.
-    public let supportsAuthenticatedExtendedCard: Bool?
+    /// JSON Web Signatures computed for this ``AgentCard``.
+    public let signatures: [AgentCardSignature]?
+
+    /// An optional URL to an icon for the agent.
+    public let iconUrl: String?
 
     public init(
-        protocolVersion: String,
         name: String,
         description: String,
-        url: String,
-        preferredTransport: TransportProtocol? = nil,
-        additionalInterfaces: [AgentInterface]? = nil,
-        iconUrl: String? = nil,
+        supportedInterfaces: [AgentInterface],
         provider: AgentProvider? = nil,
         version: String,
         documentationUrl: String? = nil,
         capabilities: AgentCapabilities,
         securitySchemes: [String: SecurityScheme]? = nil,
-        security: [[String: [String]]]? = nil,
+        securityRequirements: [[String: [String]]]? = nil,
         defaultInputModes: [String],
         defaultOutputModes: [String],
         skills: [AgentSkill],
-        supportsAuthenticatedExtendedCard: Bool? = nil
+        signatures: [AgentCardSignature]? = nil,
+        iconUrl: String? = nil
     ) {
-        self.protocolVersion = protocolVersion
         self.name = name
         self.description = description
-        self.url = url
-        self.preferredTransport = preferredTransport
-        self.additionalInterfaces = additionalInterfaces
-        self.iconUrl = iconUrl
+        self.supportedInterfaces = supportedInterfaces
         self.provider = provider
         self.version = version
         self.documentationUrl = documentationUrl
         self.capabilities = capabilities
         self.securitySchemes = securitySchemes
-        self.security = security
+        self.securityRequirements = securityRequirements
         self.defaultInputModes = defaultInputModes
         self.defaultOutputModes = defaultOutputModes
         self.skills = skills
-        self.supportsAuthenticatedExtendedCard = supportsAuthenticatedExtendedCard
+        self.signatures = signatures
+        self.iconUrl = iconUrl
+    }
+
+    // MARK: - Convenience accessors
+
+    /// The URL of the preferred (first) interface.
+    public var url: String? {
+        supportedInterfaces.first?.url
+    }
+
+    /// The protocol binding of the preferred (first) interface.
+    public var preferredProtocolBinding: String? {
+        supportedInterfaces.first?.protocolBinding
+    }
+}
+
+// MARK: - AgentCardSignature
+
+/// Represents a JWS signature of an ``AgentCard``.
+///
+/// Follows the JSON format of RFC 7515 JSON Web Signature (JWS).
+///
+/// Matches the proto3 `AgentCardSignature` message in `specification/a2a.proto`.
+public struct AgentCardSignature: Codable, Sendable, Equatable {
+
+    /// The protected JWS header for the signature. Always a base64url-encoded
+    /// JSON object.
+    public let `protected`: String
+
+    /// The computed signature, base64url-encoded.
+    public let signature: String
+
+    /// The unprotected JWS header values.
+    public let header: JSONObject?
+
+    public init(
+        protected: String,
+        signature: String,
+        header: JSONObject? = nil
+    ) {
+        self.protected = protected
+        self.signature = signature
+        self.header = header
     }
 }
