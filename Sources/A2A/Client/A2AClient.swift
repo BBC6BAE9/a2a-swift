@@ -140,14 +140,19 @@ public final class A2AClient: @unchecked Sendable {
         let responseDict = try await tempTransport.get(path: "")
         let agentCard = try decodeProto(AgentCard.self, from: responseDict)
 
-        let transport: any A2ATransport
-        if agentCard.capabilities.streaming {
-            transport = SseTransport(url: agentCardUrl)
-        } else {
-            transport = HttpTransport(url: agentCardUrl)
+        guard let interfaceUrl = agentCard.supportedInterfaces.first?.url,
+              !interfaceUrl.isEmpty else {
+            throw A2ATransportError.parsing(message: "AgentCard has no supported interfaces")
         }
 
-        return A2AClient(url: agentCardUrl, transport: transport, handlers: handlers)
+        let transport: any A2ATransport
+        if agentCard.capabilities.streaming {
+            transport = SseTransport(url: interfaceUrl)
+        } else {
+            transport = HttpTransport(url: interfaceUrl)
+        }
+
+        return A2AClient(url: interfaceUrl, transport: transport, handlers: handlers)
     }
 
     // MARK: - Agent Card
@@ -212,18 +217,12 @@ public final class A2AClient: @unchecked Sendable {
             headers["X-A2A-Extensions"] = message.extensions.joined(separator: ",")
         }
 
-        let request = buildRequest(method: "message/send", params: params)
-        let processed = try await applyRequestHandlers(request)
-        let response = try await transport.send(processed, headers: headers)
-        let handled = try await applyResponseHandlers(response)
-
-        logFine("Received response from message/send")
-        try throwIfError(handled)
-
-        guard let result = handled["result"] as? [String: Any] else {
-            throw A2ATransportError.parsing(message: "Missing 'result' in message/send response")
-        }
-        return try decodeProto(SendMessageResponse.self, from: result)
+        return try await sendRPC(
+            method: "message/send",
+            params: params,
+            headers: headers,
+            returning: SendMessageResponse.self
+        )
     }
 
     // MARK: - message/stream
@@ -275,10 +274,8 @@ public final class A2AClient: @unchecked Sendable {
                             return
                         }
 
-                        if let event = try? decodeProto(StreamResponse.self, from: handled) {
-                            continuation.yield(event)
-                        }
-                        // Events that don't parse as StreamResponse are silently skipped
+                        let event = try decodeProto(StreamResponse.self, from: handled)
+                        continuation.yield(event)
                     }
                     continuation.finish()
                 } catch {
@@ -301,19 +298,7 @@ public final class A2AClient: @unchecked Sendable {
     /// - Throws: ``A2ATransportError`` if the server returns a JSON-RPC error.
     public func getTask(_ taskId: String) async throws -> Task {
         log("Getting task: \(taskId)")
-
-        let request = buildRequest(method: "tasks/get", params: ["id": taskId])
-        let processed = try await applyRequestHandlers(request)
-        let response = try await transport.send(processed)
-        let handled = try await applyResponseHandlers(response)
-
-        logFine("Received response from tasks/get")
-        try throwIfError(handled)
-
-        guard let result = handled["result"] as? [String: Any] else {
-            throw A2ATransportError.parsing(message: "Missing 'result' in tasks/get response")
-        }
-        return try decodeProto(Task.self, from: result)
+        return try await sendRPC(method: "tasks/get", params: ["id": taskId], returning: Task.self)
     }
 
     // MARK: - tasks/list
@@ -325,20 +310,8 @@ public final class A2AClient: @unchecked Sendable {
     /// - Throws: ``A2ATransportError`` if the server returns a JSON-RPC error.
     public func listTasks(_ params: ListTasksRequest? = nil) async throws -> ListTasksResponse {
         log("Listing tasks...")
-
         let rpcParams: [String: Any] = try params.map { try encodeProto($0) } ?? [:]
-        let request = buildRequest(method: "tasks/list", params: rpcParams)
-        let processed = try await applyRequestHandlers(request)
-        let response = try await transport.send(processed)
-        let handled = try await applyResponseHandlers(response)
-
-        logFine("Received response from tasks/list")
-        try throwIfError(handled)
-
-        guard let result = handled["result"] as? [String: Any] else {
-            throw A2ATransportError.parsing(message: "Missing 'result' in tasks/list response")
-        }
-        return try decodeProto(ListTasksResponse.self, from: result)
+        return try await sendRPC(method: "tasks/list", params: rpcParams, returning: ListTasksResponse.self)
     }
 
     // MARK: - tasks/cancel
@@ -353,19 +326,7 @@ public final class A2AClient: @unchecked Sendable {
     /// - Throws: ``A2ATransportError`` if the server returns a JSON-RPC error.
     public func cancelTask(_ taskId: String) async throws -> Task {
         log("Canceling task: \(taskId)")
-
-        let request = buildRequest(method: "tasks/cancel", params: ["id": taskId])
-        let processed = try await applyRequestHandlers(request)
-        let response = try await transport.send(processed)
-        let handled = try await applyResponseHandlers(response)
-
-        logFine("Received response from tasks/cancel")
-        try throwIfError(handled)
-
-        guard let result = handled["result"] as? [String: Any] else {
-            throw A2ATransportError.parsing(message: "Missing 'result' in tasks/cancel response")
-        }
-        return try decodeProto(Task.self, from: result)
+        return try await sendRPC(method: "tasks/cancel", params: ["id": taskId], returning: Task.self)
     }
 
     // MARK: - tasks/subscribe
@@ -403,11 +364,12 @@ public final class A2AClient: @unchecked Sendable {
                                 ))
                                 return
                             }
-                            throw transportError(from: errorDict)
+                            continuation.finish(throwing: transportError(from: errorDict))
+                            return
                         }
-                        if let event = try? decodeProto(StreamResponse.self, from: handled) {
-                            continuation.yield(event)
-                        }
+
+                        let event = try decodeProto(StreamResponse.self, from: handled)
+                        continuation.yield(event)
                     }
                     continuation.finish()
                 } catch {
@@ -432,22 +394,11 @@ public final class A2AClient: @unchecked Sendable {
         _ config: TaskPushNotificationConfig
     ) async throws -> TaskPushNotificationConfig {
         log("Setting push notification config for task: \(config.taskID)")
-
-        let params = try encodeProto(config)
-        let request = buildRequest(method: "tasks/pushNotificationConfig/set", params: params)
-        let processed = try await applyRequestHandlers(request)
-        let response = try await transport.send(processed)
-        let handled = try await applyResponseHandlers(response)
-
-        logFine("Received response from tasks/pushNotificationConfig/set")
-        try throwIfError(handled)
-
-        guard let result = handled["result"] as? [String: Any] else {
-            throw A2ATransportError.parsing(
-                message: "Missing 'result' in pushNotificationConfig/set response"
-            )
-        }
-        return try decodeProto(TaskPushNotificationConfig.self, from: result)
+        return try await sendRPC(
+            method: "tasks/pushNotificationConfig/set",
+            params: try encodeProto(config),
+            returning: TaskPushNotificationConfig.self
+        )
     }
 
     // MARK: - tasks/pushNotificationConfig/get
@@ -464,22 +415,11 @@ public final class A2AClient: @unchecked Sendable {
         configId: String
     ) async throws -> TaskPushNotificationConfig {
         log("Getting push notification config \(configId) for task: \(taskId)")
-
-        let params: [String: Any] = ["id": taskId, "pushNotificationConfigId": configId]
-        let request = buildRequest(method: "tasks/pushNotificationConfig/get", params: params)
-        let processed = try await applyRequestHandlers(request)
-        let response = try await transport.send(processed)
-        let handled = try await applyResponseHandlers(response)
-
-        logFine("Received response from tasks/pushNotificationConfig/get")
-        try throwIfError(handled)
-
-        guard let result = handled["result"] as? [String: Any] else {
-            throw A2ATransportError.parsing(
-                message: "Missing 'result' in pushNotificationConfig/get response"
-            )
-        }
-        return try decodeProto(TaskPushNotificationConfig.self, from: result)
+        return try await sendRPC(
+            method: "tasks/pushNotificationConfig/get",
+            params: ["id": taskId, "pushNotificationConfigId": configId],
+            returning: TaskPushNotificationConfig.self
+        )
     }
 
     // MARK: - tasks/pushNotificationConfig/list
@@ -493,22 +433,11 @@ public final class A2AClient: @unchecked Sendable {
         taskId: String
     ) async throws -> ListTaskPushNotificationConfigsResponse {
         log("Listing push notification configs for task: \(taskId)")
-
-        let params: [String: Any] = ["id": taskId]
-        let request = buildRequest(method: "tasks/pushNotificationConfig/list", params: params)
-        let processed = try await applyRequestHandlers(request)
-        let response = try await transport.send(processed)
-        let handled = try await applyResponseHandlers(response)
-
-        logFine("Received response from tasks/pushNotificationConfig/list")
-        try throwIfError(handled)
-
-        guard let result = handled["result"] as? [String: Any] else {
-            throw A2ATransportError.parsing(
-                message: "Missing 'result' in pushNotificationConfig/list response"
-            )
-        }
-        return try decodeProto(ListTaskPushNotificationConfigsResponse.self, from: result)
+        return try await sendRPC(
+            method: "tasks/pushNotificationConfig/list",
+            params: ["id": taskId],
+            returning: ListTaskPushNotificationConfigsResponse.self
+        )
     }
 
     // MARK: - tasks/pushNotificationConfig/delete
@@ -524,15 +453,10 @@ public final class A2AClient: @unchecked Sendable {
         configId: String
     ) async throws {
         log("Deleting push notification config \(configId) for task: \(taskId)")
-
-        let params: [String: Any] = ["id": taskId, "pushNotificationConfigId": configId]
-        let request = buildRequest(method: "tasks/pushNotificationConfig/delete", params: params)
-        let processed = try await applyRequestHandlers(request)
-        let response = try await transport.send(processed)
-        let handled = try await applyResponseHandlers(response)
-
-        logFine("Received response from tasks/pushNotificationConfig/delete")
-        try throwIfError(handled)
+        try await sendRPC(
+            method: "tasks/pushNotificationConfig/delete",
+            params: ["id": taskId, "pushNotificationConfigId": configId]
+        )
     }
 
     // MARK: - close
@@ -545,6 +469,40 @@ public final class A2AClient: @unchecked Sendable {
     }
 
     // MARK: - Private Helpers
+
+    /// Executes a unary JSON-RPC call and decodes the `result` field into `T`.
+    @discardableResult
+    private func sendRPC<T: SwiftProtobuf.Message>(
+        method: String,
+        params: [String: Any],
+        headers: [String: String] = [:],
+        returning type: T.Type
+    ) async throws -> T {
+        let request = buildRequest(method: method, params: params)
+        let processed = try await applyRequestHandlers(request)
+        let response = try await transport.send(processed, headers: headers)
+        let handled = try await applyResponseHandlers(response)
+        logFine("Received response from \(method)")
+        try throwIfError(handled)
+        guard let result = handled["result"] as? [String: Any] else {
+            throw A2ATransportError.parsing(message: "Missing 'result' in \(method) response")
+        }
+        return try decodeProto(type, from: result)
+    }
+
+    /// Executes a unary JSON-RPC call that returns no result value.
+    private func sendRPC(
+        method: String,
+        params: [String: Any],
+        headers: [String: String] = [:]
+    ) async throws {
+        let request = buildRequest(method: method, params: params)
+        let processed = try await applyRequestHandlers(request)
+        let response = try await transport.send(processed, headers: headers)
+        let handled = try await applyResponseHandlers(response)
+        logFine("Received response from \(method)")
+        try throwIfError(handled)
+    }
 
     /// Generates the next auto-incrementing JSON-RPC request ID (thread-safe).
     private func nextRequestId() -> Int {
