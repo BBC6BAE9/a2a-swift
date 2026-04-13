@@ -40,6 +40,8 @@ final class FakeTransport: A2ATransport, @unchecked Sendable {
     private var _requests: [[String: Any]] = []
     private var _streamRequests: [[String: Any]] = []
     private var _response: [String: Any]
+    /// Optional queue of responses to return in order; falls back to _response when empty.
+    private var _responseQueue: [[String: Any]]
     private var _continuation: AsyncThrowingStream<[String: Any], Error>.Continuation?
     /// Events buffered before sendStream() is called.
     private var _pendingEvents: [[String: Any]] = []
@@ -57,9 +59,11 @@ final class FakeTransport: A2ATransport, @unchecked Sendable {
 
     init(
         response: [String: Any] = [:],
+        responses: [[String: Any]] = [],
         authHeaders: [String: String] = [:]
     ) {
         self._response = response
+        self._responseQueue = responses
         self.authHeaders = authHeaders
     }
 
@@ -76,6 +80,9 @@ final class FakeTransport: A2ATransport, @unchecked Sendable {
     ) async throws -> [String: Any] {
         let resp = _lock.withLock { () -> [String: Any] in
             _requests.append(request)
+            if !_responseQueue.isEmpty {
+                return _responseQueue.removeFirst()
+            }
             return _response
         }
         return try jsonRoundTrip(resp)

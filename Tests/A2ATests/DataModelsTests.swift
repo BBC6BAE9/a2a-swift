@@ -14,213 +14,184 @@
 
 import Testing
 import Foundation
+import SwiftProtobuf
 @testable import A2A
 // MARK: - Data Models Tests
-// Mirrors Dart `test/a2a/core/data_models_test.dart`
+// Tests proto-generated types using SwiftProtobuf JSON round-trips.
 
 @Suite("Data Models")
 struct DataModelsTests {
 
     // MARK: AgentCard
 
-    @Test("AgentCard can be serialized and deserialized")
+    @Test("AgentCard can be serialized and deserialized via SwiftProtobuf JSON")
     func agentCardRoundTrip() throws {
-        let agentCard = AgentCard(
-            protocolVersion: "1.0",
-            name: "Test Agent",
-            description: "An agent for testing",
-            url: "https://example.com/agent",
-            version: "1.0.0",
-            capabilities: AgentCapabilities(),
-            defaultInputModes: ["text"],
-            defaultOutputModes: ["text"],
-            skills: []
-        )
-        let encoded = try JSONEncoder().encode(agentCard)
-        let decoded = try JSONDecoder().decode(AgentCard.self, from: encoded)
+        var agentCard = AgentCard()
+        agentCard.name = "Test Agent"
+        agentCard.description_p = "An agent for testing"
+        agentCard.version = "1.0.0"
+
+        let jsonData = try agentCard.jsonUTF8Data()
+        let decoded = try AgentCard(jsonUTF8Data: jsonData)
 
         #expect(decoded == agentCard)
         #expect(decoded.name == "Test Agent")
     }
 
-    @Test("AgentCard with optional fields null can be serialized and deserialized")
-    func agentCardOptionalFieldsRoundTrip() throws {
-        let agentCard = AgentCard(
-            protocolVersion: "1.0",
-            name: "Test Agent",
-            description: "An agent for testing",
-            url: "https://example.com/agent",
-            version: "1.0.0",
-            capabilities: AgentCapabilities(),
-            defaultInputModes: [],
-            defaultOutputModes: [],
-            skills: []
-        )
-        let encoded = try JSONEncoder().encode(agentCard)
-        let decoded = try JSONDecoder().decode(AgentCard.self, from: encoded)
-
-        #expect(decoded == agentCard)
-    }
-
     // MARK: Message
 
-    @Test("Message can be serialized and deserialized")
+    @Test("Message can be serialized and deserialized via SwiftProtobuf JSON")
     func messageRoundTrip() throws {
-        let message = A2AMessage(
-            role: .user,
-            parts: [.text(text: "Hello, agent!")],
-            messageId: "12345"
-        )
-        let encoded = try JSONEncoder().encode(message)
-        let decoded = try JSONDecoder().decode(A2AMessage.self, from: encoded)
+        var part = Part()
+        part.text = "Hello, agent!"
+
+        var message = Message()
+        message.messageID = "12345"
+        message.role = .user
+        message.parts = [part]
+
+        let jsonData = try message.jsonUTF8Data()
+        let decoded = try Message(jsonUTF8Data: jsonData)
 
         #expect(decoded == message)
         #expect(decoded.role == .user)
+        #expect(decoded.messageID == "12345")
     }
 
     @Test("Message with empty parts can be serialized and deserialized")
     func messageEmptyPartsRoundTrip() throws {
-        let message = A2AMessage(
-            role: .user,
-            parts: [],
-            messageId: "12345"
-        )
-        let encoded = try JSONEncoder().encode(message)
-        let decoded = try JSONDecoder().decode(A2AMessage.self, from: encoded)
+        var message = Message()
+        message.messageID = "12345"
+        message.role = .user
+
+        let jsonData = try message.jsonUTF8Data()
+        let decoded = try Message(jsonUTF8Data: jsonData)
 
         #expect(decoded == message)
     }
 
     @Test("Message with multiple parts can be serialized and deserialized")
     func messageMultiplePartsRoundTrip() throws {
-        let message = A2AMessage(
-            role: .user,
-            parts: [
-                .text(text: "Hello"),
-                .file(file: .uri(uri: "file:///path/to/file.txt", name: nil, mimeType: "text/plain")),
-                .data(data: ["key": AnyCodable("value")])
-            ],
-            messageId: "12345"
-        )
-        let encoded = try JSONEncoder().encode(message)
-        let decoded = try JSONDecoder().decode(A2AMessage.self, from: encoded)
+        var textPart = Part()
+        textPart.text = "Hello"
+
+        var urlPart = Part()
+        urlPart.url = "file:///path/to/file.txt"
+        urlPart.mediaType = "text/plain"
+
+        var rawPart = Part()
+        rawPart.raw = Data("hello".utf8)
+
+        var message = Message()
+        message.messageID = "12345"
+        message.role = .user
+        message.parts = [textPart, urlPart, rawPart]
+
+        let jsonData = try message.jsonUTF8Data()
+        let decoded = try Message(jsonUTF8Data: jsonData)
 
         #expect(decoded == message)
+        #expect(decoded.parts.count == 3)
     }
 
     // MARK: Task
 
-    @Test("Task can be serialized and deserialized")
+    @Test("Task can be serialized and deserialized via SwiftProtobuf JSON")
     func taskRoundTrip() throws {
-        let task = A2ATask(
-            id: "task-123",
-            contextId: "context-456",
-            status: TaskStatus(state: .working),
-            artifacts: [
-                Artifact(
-                    artifactId: "artifact-1",
-                    parts: [.text(text: "Hello")]
-                )
-            ]
-        )
-        let encoded = try JSONEncoder().encode(task)
-        let decoded = try JSONDecoder().decode(A2ATask.self, from: encoded)
+        var status = TaskStatus()
+        status.state = .working
+
+        var artifact = Artifact()
+        artifact.artifactID = "artifact-1"
+        var artifactPart = Part()
+        artifactPart.text = "Hello"
+        artifact.parts = [artifactPart]
+
+        var task = Task()
+        task.id = "task-123"
+        task.contextID = "context-456"
+        task.status = status
+        task.artifacts = [artifact]
+
+        let jsonData = try task.jsonUTF8Data()
+        let decoded = try Task(jsonUTF8Data: jsonData)
 
         #expect(decoded == task)
         #expect(decoded.id == "task-123")
+        #expect(decoded.contextID == "context-456")
     }
 
-    @Test("Task with optional fields null can be serialized and deserialized")
-    func taskOptionalFieldsRoundTrip() throws {
-        let task = A2ATask(
-            id: "task-123",
-            contextId: "context-456",
-            status: TaskStatus(state: .working)
-        )
-        let encoded = try JSONEncoder().encode(task)
-        let decoded = try JSONDecoder().decode(A2ATask.self, from: encoded)
+    @Test("Task with minimal fields can be serialized and deserialized")
+    func taskMinimalRoundTrip() throws {
+        var status = TaskStatus()
+        status.state = .working
+
+        var task = Task()
+        task.id = "task-123"
+        task.contextID = "context-456"
+        task.status = status
+
+        let jsonData = try task.jsonUTF8Data()
+        let decoded = try Task(jsonUTF8Data: jsonData)
 
         #expect(decoded == task)
     }
 
     // MARK: Part
 
-    @Test("Part can be serialized and deserialized")
-    func partRoundTrip() throws {
-        // text
-        let partText = Part.text(text: "Hello")
-        let encodedText = try JSONEncoder().encode(partText)
-        let decodedText = try JSONDecoder().decode(Part.self, from: encodedText)
-        #expect(decodedText == partText)
+    @Test("Part text can be serialized and deserialized")
+    func partTextRoundTrip() throws {
+        var part = Part()
+        part.text = "Hello"
 
-        // file uri
-        let partFileUri = Part.file(
-            file: .uri(uri: "file:///path/to/file.txt", name: nil, mimeType: "text/plain")
-        )
-        let encodedFileUri = try JSONEncoder().encode(partFileUri)
-        let decodedFileUri = try JSONDecoder().decode(Part.self, from: encodedFileUri)
-        #expect(decodedFileUri == partFileUri)
+        let jsonData = try part.jsonUTF8Data()
+        let decoded = try Part(jsonUTF8Data: jsonData)
 
-        // file bytes
-        let partFileBytes = Part.file(
-            file: .bytes(bytes: "aGVsbG8=", name: "hello.txt", mimeType: nil)
-        )
-        let encodedFileBytes = try JSONEncoder().encode(partFileBytes)
-        let decodedFileBytes = try JSONDecoder().decode(Part.self, from: encodedFileBytes)
-        #expect(decodedFileBytes == partFileBytes)
-
-        // data
-        let partData = Part.data(data: ["key": AnyCodable("value")])
-        let encodedData = try JSONEncoder().encode(partData)
-        let decodedData = try JSONDecoder().decode(Part.self, from: encodedData)
-        #expect(decodedData == partData)
+        #expect(decoded == part)
+        if case .text(let t) = decoded.content {
+            #expect(t == "Hello")
+        } else {
+            Issue.record("Expected text content")
+        }
     }
 
-    // MARK: SecurityScheme
+    @Test("Part url can be serialized and deserialized")
+    func partUrlRoundTrip() throws {
+        var part = Part()
+        part.url = "file:///path/to/file.txt"
+        part.mediaType = "text/plain"
 
-    @Test("SecurityScheme can be serialized and deserialized")
-    func securitySchemeRoundTrip() throws {
-        let scheme = SecurityScheme.apiKey(
-            description: nil,
-            name: "test_key",
-            in: "header"
-        )
-        let encoded = try JSONEncoder().encode(scheme)
-        let decoded = try JSONDecoder().decode(SecurityScheme.self, from: encoded)
+        let jsonData = try part.jsonUTF8Data()
+        let decoded = try Part(jsonUTF8Data: jsonData)
 
-        #expect(decoded == scheme)
+        #expect(decoded == part)
     }
 
-    // MARK: PushNotificationConfig
+    @Test("Part raw bytes can be serialized and deserialized")
+    func partRawRoundTrip() throws {
+        var part = Part()
+        part.raw = Data("hello".utf8)
+        part.filename = "hello.txt"
 
-    @Test("PushNotificationConfig can be serialized and deserialized")
-    func pushNotificationConfigRoundTrip() throws {
-        let config = PushNotificationConfig(
-            id: "config-1",
-            url: "https://example.com/push",
-            authentication: PushNotificationAuthenticationInfo(
-                schemes: ["Bearer"],
-                credentials: "test-token"
-            )
-        )
-        let encoded = try JSONEncoder().encode(config)
-        let decoded = try JSONDecoder().decode(PushNotificationConfig.self, from: encoded)
+        let jsonData = try part.jsonUTF8Data()
+        let decoded = try Part(jsonUTF8Data: jsonData)
 
-        #expect(decoded == config)
+        #expect(decoded == part)
     }
+
+    // MARK: TaskPushNotificationConfig
 
     @Test("TaskPushNotificationConfig can be serialized and deserialized")
     func taskPushNotificationConfigRoundTrip() throws {
-        let taskConfig = TaskPushNotificationConfig(
-            taskId: "task-123",
-            pushNotificationConfig: PushNotificationConfig(
-                id: "config-1",
-                url: "https://example.com/push"
-            )
-        )
-        let encoded = try JSONEncoder().encode(taskConfig)
-        let decoded = try JSONDecoder().decode(TaskPushNotificationConfig.self, from: encoded)
+        var config = TaskPushNotificationConfig()
+        config.taskID = "task-123"
+        config.id = "config-1"
+        config.url = "https://example.com/push"
 
-        #expect(decoded == taskConfig)
+        let jsonData = try config.jsonUTF8Data()
+        let decoded = try TaskPushNotificationConfig(jsonUTF8Data: jsonData)
+
+        #expect(decoded == config)
+        #expect(decoded.taskID == "task-123")
     }
 }

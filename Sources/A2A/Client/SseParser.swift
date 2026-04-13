@@ -55,7 +55,7 @@ public struct SseParser: Sendable {
         _ lines: S
     ) -> AsyncThrowingStream<[String: Any], Error> where S.Element == String {
         AsyncThrowingStream { continuation in
-            let task = Task {
+            let task = _Concurrency.Task {
                 var dataBuffer: [String] = []
 
                 do {

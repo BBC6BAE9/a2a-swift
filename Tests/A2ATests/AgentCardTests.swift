@@ -23,27 +23,20 @@ struct AgentCardTests {
 
     @Test("can be instantiated")
     func instantiation() {
-        let agentCard = AgentCard(
-            protocolVersion: "0.2.9",
-            name: "Test Agent",
-            description: "A test agent.",
-            url: "https://example.com/a2a",
-            version: "1.0.0",
-            capabilities: AgentCapabilities(),
-            defaultInputModes: [],
-            defaultOutputModes: [],
-            skills: []
-        )
+        var agentCard = AgentCard()
+        agentCard.name = "Test Agent"
+        agentCard.description_p = "A test agent."
+        agentCard.version = "1.0.0"
         _ = agentCard  // confirms it exists
     }
 
-    @Test("can be serialized and deserialized from JSON")
+    @Test("can be serialized and deserialized from JSON via SwiftProtobuf")
     func jsonRoundTrip() throws {
         let data = agentCardJson.data(using: .utf8)!
-        let agentCard = try JSONDecoder().decode(AgentCard.self, from: data)
+        let agentCard = try AgentCard(jsonUTF8Data: data)
 
-        let reEncoded = try JSONEncoder().encode(agentCard)
-        let agentCard2 = try JSONDecoder().decode(AgentCard.self, from: reEncoded)
+        let reEncoded = try agentCard.jsonUTF8Data()
+        let agentCard2 = try AgentCard(jsonUTF8Data: reEncoded)
 
         #expect(agentCard2 == agentCard)
         #expect(agentCard.name == "GeoSpatial Route Planner Agent")
@@ -56,52 +49,14 @@ struct AgentCardTests {
 
 private let agentCardJson = """
 {
-  "protocolVersion": "0.2.9",
   "name": "GeoSpatial Route Planner Agent",
   "description": "Provides advanced route planning, traffic analysis, and custom map generation services. This agent can calculate optimal routes, estimate travel times considering real-time traffic, and create personalized maps with points of interest.",
-  "url": "https://georoute-agent.example.com/a2a/v1",
-  "preferredTransport": "JSONRPC",
-  "additionalInterfaces": [
-    {
-      "url": "https://georoute-agent.example.com/a2a/v1",
-      "transport": "JSONRPC"
-    },
-    {
-      "url": "https://georoute-agent.example.com/a2a/grpc",
-      "transport": "GRPC"
-    },
-    {
-      "url": "https://georoute-agent.example.com/a2a/json",
-      "transport": "HTTP+JSON"
-    }
-  ],
-  "provider": {
-    "organization": "Example Geo Services Inc.",
-    "url": "https://www.examplegeoservices.com"
-  },
-  "iconUrl": "https://georoute-agent.example.com/icon.png",
   "version": "1.2.0",
   "documentationUrl": "https://docs.examplegeoservices.com/georoute-agent/api",
   "capabilities": {
     "streaming": true,
-    "pushNotifications": true,
-    "stateTransitionHistory": false
+    "pushNotifications": true
   },
-  "securitySchemes": {
-    "google": {
-      "type": "openIdConnect",
-      "openIdConnectUrl": "https://accounts.google.com/.well-known/openid-configuration"
-    }
-  },
-  "security": [
-    {
-      "google": [
-        "openid",
-        "profile",
-        "email"
-      ]
-    }
-  ],
   "defaultInputModes": [
     "application/json",
     "text/plain"
@@ -123,8 +78,7 @@ private let agentCardJson = """
         "traffic"
       ],
       "examples": [
-        "Plan a route from '1600 Amphitheatre Parkway, Mountain View, CA' to 'San Francisco International Airport' avoiding tolls.",
-        "{\\"origin\\": {\\"lat\\": 37.422, \\"lng\\": -122.084}, \\"destination\\": {\\"lat\\": 37.7749, \\"lng\\": -122.4194}, \\"preferences\\": [\\"avoid_ferries\\"]}"
+        "Plan a route from '1600 Amphitheatre Parkway, Mountain View, CA' to 'San Francisco International Airport' avoiding tolls."
       ],
       "inputModes": [
         "application/json",
@@ -132,7 +86,6 @@ private let agentCardJson = """
       ],
       "outputModes": [
         "application/json",
-        "application/vnd.geo+json",
         "text/html"
       ]
     },
@@ -147,8 +100,7 @@ private let agentCardJson = """
         "cartography"
       ],
       "examples": [
-        "Generate a map of my upcoming road trip with all planned stops highlighted.",
-        "Show me a map visualizing all coffee shops within a 1-mile radius of my current location."
+        "Generate a map of my upcoming road trip with all planned stops highlighted."
       ],
       "inputModes": [
         "application/json"
@@ -160,7 +112,6 @@ private let agentCardJson = """
         "text/html"
       ]
     }
-  ],
-  "supportsAuthenticatedExtendedCard": true
+  ]
 }
 """

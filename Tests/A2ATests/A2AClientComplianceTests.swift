@@ -25,14 +25,19 @@ struct A2AClientComplianceTests {
 
     @Test("listTasks sends correct request and parses response")
     func listTasksSendsAndParses() async throws {
-        let result = ListTasksResult(tasks: [], totalSize: 0, pageSize: 10, nextPageToken: "")
-        let resultData = try JSONEncoder().encode(result)
-        let resultDict = try JSONSerialization.jsonObject(with: resultData) as! [String: Any]
+        // Proto JSON for ListTasksResponse
+        let resultDict: [String: Any] = [
+            "tasks": [[String: Any]](),
+            "nextPageToken": "",
+            "pageSize": 10,
+            "totalSize": 0,
+        ]
 
         let transport = FakeTransport(response: ["result": resultDict])
         let client = A2AClient(url: "http://example.com", transport: transport)
 
-        let params = ListTasksParams(pageSize: 10)
+        var params = ListTasksRequest()
+        params.pageSize = 10
         let response = try await client.listTasks(params)
 
         #expect(response.tasks.isEmpty)
@@ -43,19 +48,20 @@ struct A2AClientComplianceTests {
 
     @Test("setPushNotificationConfig sends correct request")
     func setPushNotificationConfig() async throws {
-        let config = TaskPushNotificationConfig(
-            taskId: "task-123",
-            pushNotificationConfig: PushNotificationConfig(
-                id: "config-123",
-                url: "http://example.com/push"
-            )
-        )
-        let configData = try JSONEncoder().encode(config)
-        let configDict = try JSONSerialization.jsonObject(with: configData) as! [String: Any]
+        // Proto JSON for TaskPushNotificationConfig
+        let configDict: [String: Any] = [
+            "taskId": "task-123",
+            "id": "config-123",
+            "url": "http://example.com/push",
+        ]
 
         let transport = FakeTransport(response: ["result": configDict])
         let client = A2AClient(url: "http://example.com", transport: transport)
 
+        var config = TaskPushNotificationConfig()
+        config.taskID = "task-123"
+        config.id = "config-123"
+        config.url = "http://example.com/push"
         _ = try await client.setPushNotificationConfig(config)
     }
 
@@ -63,15 +69,11 @@ struct A2AClientComplianceTests {
 
     @Test("getPushNotificationConfig sends correct request")
     func getPushNotificationConfig() async throws {
-        let config = TaskPushNotificationConfig(
-            taskId: "task-123",
-            pushNotificationConfig: PushNotificationConfig(
-                id: "config-123",
-                url: "http://example.com/push"
-            )
-        )
-        let configData = try JSONEncoder().encode(config)
-        let configDict = try JSONSerialization.jsonObject(with: configData) as! [String: Any]
+        let configDict: [String: Any] = [
+            "taskId": "task-123",
+            "id": "config-123",
+            "url": "http://example.com/push",
+        ]
 
         let transport = FakeTransport(response: ["result": configDict])
         let client = A2AClient(url: "http://example.com", transport: transport)
@@ -88,7 +90,7 @@ struct A2AClientComplianceTests {
 
         let response = try await client.listPushNotificationConfigs(taskId: "task-123")
 
-        #expect(response.isEmpty)
+        #expect(response.configs.isEmpty)
     }
 
     // MARK: deletePushNotificationConfig
