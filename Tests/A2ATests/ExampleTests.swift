@@ -27,11 +27,12 @@ struct ExampleTests {
         let client = A2AClient(url: "http://localhost/", transport: transport)
         defer { client.close() }
 
-        let message = A2AMessage(
-            role: .user,
-            parts: [.text(text: "start 10")],
-            messageId: UUID().uuidString
-        )
+        var message = Message()
+        message.messageID = UUID().uuidString
+        message.role = .user
+        var startPart = Part()
+        startPart.text = "start 10"
+        message.parts = [startPart]
 
         let stream = client.messageStream(message)
 
@@ -40,46 +41,50 @@ struct ExampleTests {
 
         // Feed all events before draining (FakeTransport queues events added
         // before sendStream is called, then flushes them when the stream is consumed).
+        // Proto JSON: StreamResponse with statusUpdate payload
         transport.addEvent([
-            "kind": "task-status-update",
-            "taskId": "task-123",
-            "contextId": "context-123",
-            "status": ["state": "working"] as [String: Any],
-            "final": false,
+            "statusUpdate": [
+                "taskId": "task-123",
+                "contextId": "context-123",
+                "status": ["state": "TASK_STATE_WORKING"] as [String: Any],
+            ] as [String: Any],
         ])
 
         for i in stride(from: 10, through: 0, by: -1) {
+            // Proto JSON: StreamResponse with artifactUpdate payload
             transport.addEvent([
-                "kind": "artifact-update",
-                "taskId": "task-123",
-                "contextId": "context-123",
-                "artifact": [
-                    "artifactId": "artifact-\(i)",
-                    "parts": [["kind": "text", "text": "Countdown at \(i)!"] as [String: Any]],
+                "artifactUpdate": [
+                    "taskId": "task-123",
+                    "contextId": "context-123",
+                    "artifact": [
+                        "artifactId": "artifact-\(i)",
+                        "parts": [["text": "Countdown at \(i)!"] as [String: Any]],
+                    ] as [String: Any],
+                    "append": false,
+                    "lastChunk": i == 0,
                 ] as [String: Any],
-                "append": false,
-                "lastChunk": i == 0,
             ])
         }
 
         transport.addEvent([
-            "kind": "task-status-update",
-            "taskId": "task-123",
-            "contextId": "context-123",
-            "status": ["state": "completed"] as [String: Any],
-            "final": true,
+            "statusUpdate": [
+                "taskId": "task-123",
+                "contextId": "context-123",
+                "status": ["state": "TASK_STATE_COMPLETED"] as [String: Any],
+            ] as [String: Any],
         ])
 
         transport.addEvent([
-            "kind": "artifact-update",
-            "taskId": "task-123",
-            "contextId": "context-123",
-            "artifact": [
-                "artifactId": "artifact-liftoff",
-                "parts": [["kind": "text", "text": "Liftoff!"] as [String: Any]],
+            "artifactUpdate": [
+                "taskId": "task-123",
+                "contextId": "context-123",
+                "artifact": [
+                    "artifactId": "artifact-liftoff",
+                    "parts": [["text": "Liftoff!"] as [String: Any]],
+                ] as [String: Any],
+                "append": false,
+                "lastChunk": true,
             ] as [String: Any],
-            "append": false,
-            "lastChunk": true,
         ])
 
         transport.finishStream()
@@ -87,23 +92,26 @@ struct ExampleTests {
         // Drain stream.
         for try await event in stream {
             if taskId == nil {
-                switch event {
-                case .taskStatusUpdate(let id, _, _, _): taskId = id
-                case .statusUpdate(let id, _, _, _): taskId = id
-                case .artifactUpdate(let id, _, _, _, _): taskId = id
+                switch event.payload {
+                case .statusUpdate(let update): taskId = update.taskID
+                case .artifactUpdate(let update): taskId = update.taskID
+                case .task(let task): taskId = task.id
+                case .message(let msg): taskId = msg.taskID
+                case .none: break
                 }
             }
-            if case .artifactUpdate(_, _, let artifact, _, _) = event {
-                for part in artifact.parts {
-                    if case .text(let text, _) = part {
+            if case .artifactUpdate(let update)? = event.payload {
+                for part in update.artifact.parts {
+                    if case .text(let text) = part.content {
                         collectedTexts.append(text)
                         if text.contains("Countdown at 5") {
-                            let pauseMessage = A2AMessage(
-                                role: .user,
-                                parts: [.text(text: "pause")],
-                                messageId: UUID().uuidString,
-                                taskId: taskId
-                            )
+                            var pauseMessage = Message()
+                            pauseMessage.messageID = UUID().uuidString
+                            pauseMessage.role = .user
+                            pauseMessage.taskID = taskId ?? ""
+                            var pausePart = Part()
+                            pausePart.text = "pause"
+                            pauseMessage.parts = [pausePart]
                             _ = try? await client.messageSend(pauseMessage)
                         }
                     }

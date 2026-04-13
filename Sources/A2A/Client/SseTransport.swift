@@ -100,7 +100,7 @@ public final class SseTransport: HttpTransport, @unchecked Sendable {
         let log = logger
         #endif
 
-        let task = Task {
+        let task = _Concurrency.Task {
             guard let requestURL = URL(string: capturedURL) else {
                 continuation.finish(throwing: A2ATransportError.network(
                     message: "Invalid URL: \(capturedURL)"

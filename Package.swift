@@ -18,9 +18,18 @@ let package = Package(
             targets: ["A2A"]
         ),
     ],
+    dependencies: [
+        .package(
+            url: "https://github.com/apple/swift-protobuf.git",
+            from: "1.29.0"
+        ),
+    ],
     targets: [
         .target(
             name: "A2A",
+            dependencies: [
+                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+            ],
             path: "Sources/A2A",
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),

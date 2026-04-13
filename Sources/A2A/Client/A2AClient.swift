@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import Foundation
+import SwiftProtobuf
 #if canImport(os)
 import os
 #endif
@@ -95,6 +96,9 @@ public final class A2AClient: @unchecked Sendable {
     /// The well-known path for the agent card endpoint.
     public static let agentCardPath = "/.well-known/agent-card.json"
 
+    /// The path for the authenticated extended agent card endpoint.
+    public static let extendedAgentCardPath = "/extendedAgentCard"
+
     // MARK: - Initialisation
 
     /// Creates an ``A2AClient`` instance.
@@ -134,16 +138,16 @@ public final class A2AClient: @unchecked Sendable {
     ) async throws -> A2AClient {
         let tempTransport = HttpTransport(url: agentCardUrl)
         let responseDict = try await tempTransport.get(path: "")
-        let agentCard = try decodeFromDict(AgentCard.self, dict: responseDict)
+        let agentCard = try decodeProto(AgentCard.self, from: responseDict)
 
         let transport: any A2ATransport
-        if agentCard.capabilities.streaming == true {
-            transport = SseTransport(url: agentCard.url)
+        if agentCard.capabilities.streaming {
+            transport = SseTransport(url: agentCardUrl)
         } else {
-            transport = HttpTransport(url: agentCard.url)
+            transport = HttpTransport(url: agentCardUrl)
         }
 
-        return A2AClient(url: agentCard.url, transport: transport, handlers: handlers)
+        return A2AClient(url: agentCardUrl, transport: transport, handlers: handlers)
     }
 
     // MARK: - Agent Card
@@ -159,7 +163,7 @@ public final class A2AClient: @unchecked Sendable {
         log("Fetching agent card...")
         let response = try await transport.get(path: Self.agentCardPath)
         logFine("Received agent card")
-        return try decodeFromDict(AgentCard.self, dict: response)
+        return try decodeProto(AgentCard.self, from: response)
     }
 
     /// Fetches the authenticated extended agent card from the server.
@@ -174,11 +178,11 @@ public final class A2AClient: @unchecked Sendable {
     public func getAuthenticatedExtendedCard(_ token: String) async throws -> AgentCard {
         log("Fetching authenticated agent card...")
         let response = try await transport.get(
-            path: Self.agentCardPath,
+            path: Self.extendedAgentCardPath,
             headers: ["Authorization": "Bearer \(token)"]
         )
         logFine("Received authenticated agent card")
-        return try decodeFromDict(AgentCard.self, dict: response)
+        return try decodeProto(AgentCard.self, from: response)
     }
 
     // MARK: - message/send
@@ -186,26 +190,26 @@ public final class A2AClient: @unchecked Sendable {
     /// Sends a message to the agent for a single-shot interaction via
     /// `message/send`.
     ///
-    /// The server processes the message and returns a result. The returned
-    /// ``A2ATask`` contains the initial state of the task.
+    /// The server processes the message and returns either a `Task` or a
+    /// `Message` wrapped in a ``SendMessageResponse``.
     ///
     /// For long-running operations, consider ``messageStream(_:)`` or polling
     /// with ``getTask(_:)``.
     ///
-    /// - Parameter message: The ``A2AMessage`` to send.
-    /// - Returns: The initial ``A2ATask`` state.
+    /// - Parameter message: The ``Message`` to send.
+    /// - Returns: A ``SendMessageResponse`` containing either a task or a message.
     /// - Throws: ``A2ATransportError`` if the server returns a JSON-RPC error.
-    public func messageSend(_ message: A2AMessage) async throws -> A2ATask {
-        log("Sending message: \(message.messageId)")
+    public func messageSend(_ message: Message) async throws -> SendMessageResponse {
+        log("Sending message: \(message.messageID)")
 
-        var params: [String: Any] = ["message": try encodeToDict(message)]
-        if let extensions = message.extensions {
-            params["extensions"] = extensions
+        var params: [String: Any] = ["message": try encodeProto(message)]
+        if !message.extensions.isEmpty {
+            params["extensions"] = message.extensions
         }
 
         var headers: [String: String] = [:]
-        if let extensions = message.extensions {
-            headers["X-A2A-Extensions"] = extensions.joined(separator: ",")
+        if !message.extensions.isEmpty {
+            headers["X-A2A-Extensions"] = message.extensions.joined(separator: ",")
         }
 
         let request = buildRequest(method: "message/send", params: params)
@@ -219,7 +223,7 @@ public final class A2AClient: @unchecked Sendable {
         guard let result = handled["result"] as? [String: Any] else {
             throw A2ATransportError.parsing(message: "Missing 'result' in message/send response")
         }
-        return try decodeFromDict(A2ATask.self, dict: result)
+        return try decodeProto(SendMessageResponse.self, from: result)
     }
 
     // MARK: - message/stream
@@ -228,28 +232,28 @@ public final class A2AClient: @unchecked Sendable {
     /// `message/stream`.
     ///
     /// The agent can send multiple updates over time. The returned stream
-    /// emits ``A2AEvent`` objects as they are received, typically via SSE.
+    /// emits ``StreamResponse`` objects as they are received, typically via SSE.
     ///
-    /// - Parameter message: The ``A2AMessage`` to send.
-    /// - Returns: An `AsyncThrowingStream` of ``A2AEvent`` objects.
-    public func messageStream(_ message: A2AMessage) -> AsyncThrowingStream<A2AEvent, Error> {
-        log("Sending message for stream: \(message.messageId)")
+    /// - Parameter message: The ``Message`` to send.
+    /// - Returns: An `AsyncThrowingStream` of ``StreamResponse`` objects.
+    public func messageStream(_ message: Message) -> AsyncThrowingStream<StreamResponse, Error> {
+        log("Sending message for stream: \(message.messageID)")
 
         return AsyncThrowingStream { continuation in
-            let task = Task {
+            let task = _Concurrency.Task {
                 do {
                     var params: [String: Any] = [
                         "configuration": NSNull(),
                         "metadata": NSNull(),
-                        "message": try encodeToDict(message),
+                        "message": try encodeProto(message),
                     ]
-                    if let extensions = message.extensions {
-                        params["extensions"] = extensions
+                    if !message.extensions.isEmpty {
+                        params["extensions"] = message.extensions
                     }
 
                     var headers: [String: String] = [:]
-                    if let extensions = message.extensions {
-                        headers["X-A2A-Extensions"] = extensions.joined(separator: ",")
+                    if !message.extensions.isEmpty {
+                        headers["X-A2A-Extensions"] = message.extensions.joined(separator: ",")
                     }
 
                     let request = self.buildRequest(method: "message/stream", params: params)
@@ -271,23 +275,10 @@ public final class A2AClient: @unchecked Sendable {
                             return
                         }
 
-                        if let kind = handled["kind"] as? String {
-                            if kind == "task" {
-                                // Server sent a full task object — convert to status update event
-                                let task = try decodeFromDict(A2ATask.self, dict: handled)
-                                let event = A2AEvent.statusUpdate(
-                                    taskId: task.id,
-                                    contextId: task.contextId,
-                                    status: task.status,
-                                    isFinal: false
-                                )
-                                continuation.yield(event)
-                            } else {
-                                let event = try decodeFromDict(A2AEvent.self, dict: handled)
-                                continuation.yield(event)
-                            }
+                        if let event = try? decodeProto(StreamResponse.self, from: handled) {
+                            continuation.yield(event)
                         }
-                        // Events without "kind" are silently skipped (matches Dart behavior)
+                        // Events that don't parse as StreamResponse are silently skipped
                     }
                     continuation.finish()
                 } catch {
@@ -306,9 +297,9 @@ public final class A2AClient: @unchecked Sendable {
     /// Retrieves the current state of a task from the server using `tasks/get`.
     ///
     /// - Parameter taskId: The unique identifier of the task.
-    /// - Returns: The current ``A2ATask`` state.
+    /// - Returns: The current ``Task`` state.
     /// - Throws: ``A2ATransportError`` if the server returns a JSON-RPC error.
-    public func getTask(_ taskId: String) async throws -> A2ATask {
+    public func getTask(_ taskId: String) async throws -> Task {
         log("Getting task: \(taskId)")
 
         let request = buildRequest(method: "tasks/get", params: ["id": taskId])
@@ -322,20 +313,20 @@ public final class A2AClient: @unchecked Sendable {
         guard let result = handled["result"] as? [String: Any] else {
             throw A2ATransportError.parsing(message: "Missing 'result' in tasks/get response")
         }
-        return try decodeFromDict(A2ATask.self, dict: result)
+        return try decodeProto(Task.self, from: result)
     }
 
     // MARK: - tasks/list
 
     /// Retrieves a list of tasks from the server using `tasks/list`.
     ///
-    /// - Parameter params: Optional ``ListTasksParams`` to filter, sort, and paginate.
-    /// - Returns: A ``ListTasksResult`` containing the task list and pagination info.
+    /// - Parameter request: Optional ``ListTasksRequest`` to filter, sort, and paginate.
+    /// - Returns: A ``ListTasksResponse`` containing the task list and pagination info.
     /// - Throws: ``A2ATransportError`` if the server returns a JSON-RPC error.
-    public func listTasks(_ params: ListTasksParams? = nil) async throws -> ListTasksResult {
+    public func listTasks(_ params: ListTasksRequest? = nil) async throws -> ListTasksResponse {
         log("Listing tasks...")
 
-        let rpcParams: [String: Any] = params.map { try! encodeToDict($0) } ?? [:]
+        let rpcParams: [String: Any] = try params.map { try encodeProto($0) } ?? [:]
         let request = buildRequest(method: "tasks/list", params: rpcParams)
         let processed = try await applyRequestHandlers(request)
         let response = try await transport.send(processed)
@@ -347,7 +338,7 @@ public final class A2AClient: @unchecked Sendable {
         guard let result = handled["result"] as? [String: Any] else {
             throw A2ATransportError.parsing(message: "Missing 'result' in tasks/list response")
         }
-        return try decodeFromDict(ListTasksResult.self, dict: result)
+        return try decodeProto(ListTasksResponse.self, from: result)
     }
 
     // MARK: - tasks/cancel
@@ -358,9 +349,9 @@ public final class A2AClient: @unchecked Sendable {
     /// may not support cancellation.
     ///
     /// - Parameter taskId: The unique identifier of the task to cancel.
-    /// - Returns: The updated ``A2ATask`` state after the cancellation request.
+    /// - Returns: The updated ``Task`` state after the cancellation request.
     /// - Throws: ``A2ATransportError`` if the server returns a JSON-RPC error.
-    public func cancelTask(_ taskId: String) async throws -> A2ATask {
+    public func cancelTask(_ taskId: String) async throws -> Task {
         log("Canceling task: \(taskId)")
 
         let request = buildRequest(method: "tasks/cancel", params: ["id": taskId])
@@ -374,27 +365,28 @@ public final class A2AClient: @unchecked Sendable {
         guard let result = handled["result"] as? [String: Any] else {
             throw A2ATransportError.parsing(message: "Missing 'result' in tasks/cancel response")
         }
-        return try decodeFromDict(A2ATask.self, dict: result)
+        return try decodeProto(Task.self, from: result)
     }
 
-    // MARK: - tasks/resubscribe
+    // MARK: - tasks/subscribe
 
-    /// Resubscribes to an SSE stream for an ongoing task using
-    /// `tasks/resubscribe`.
+    /// Subscribes (or resubscribes) to an SSE stream for an ongoing task using
+    /// `tasks/subscribe`.
     ///
-    /// Allows a client to reconnect to the event stream after a network
-    /// interruption. Subsequent ``A2AEvent``s for the task will be emitted.
+    /// Allows a client to connect (or reconnect after a network interruption)
+    /// to the event stream for a task. Subsequent ``StreamResponse`` events for
+    /// the task will be emitted.
     ///
-    /// - Parameter taskId: The unique identifier of the task to resubscribe to.
-    /// - Returns: An `AsyncThrowingStream` of ``A2AEvent`` objects.
-    public func resubscribeToTask(_ taskId: String) -> AsyncThrowingStream<A2AEvent, Error> {
-        log("Resubscribing to task: \(taskId)")
+    /// - Parameter taskId: The unique identifier of the task to subscribe to.
+    /// - Returns: An `AsyncThrowingStream` of ``StreamResponse`` objects.
+    public func subscribeToTask(_ taskId: String) -> AsyncThrowingStream<StreamResponse, Error> {
+        log("Subscribing to task: \(taskId)")
 
         return AsyncThrowingStream { continuation in
-            let task = Task {
+            let task = _Concurrency.Task {
                 do {
                     let request = self.buildRequest(
-                        method: "tasks/resubscribe",
+                        method: "tasks/subscribe",
                         params: ["id": taskId]
                     )
                     let processed = try await self.applyRequestHandlers(request)
@@ -402,19 +394,20 @@ public final class A2AClient: @unchecked Sendable {
 
                     for try await data in stream {
                         let handled = try await self.applyResponseHandlers(data)
-                        self.logFine("Received event from resubscribe stream")
+                        self.logFine("Received event from subscribe stream")
 
                         if handled["error"] != nil {
                             guard let errorDict = handled["error"] as? [String: Any] else {
                                 continuation.finish(throwing: A2ATransportError.parsing(
-                                    message: "Malformed 'error' in resubscribe event"
+                                    message: "Malformed 'error' in subscribe event"
                                 ))
                                 return
                             }
                             throw transportError(from: errorDict)
                         }
-                        let event = try decodeFromDict(A2AEvent.self, dict: handled)
-                        continuation.yield(event)
+                        if let event = try? decodeProto(StreamResponse.self, from: handled) {
+                            continuation.yield(event)
+                        }
                     }
                     continuation.finish()
                 } catch {
@@ -438,9 +431,9 @@ public final class A2AClient: @unchecked Sendable {
     public func setPushNotificationConfig(
         _ config: TaskPushNotificationConfig
     ) async throws -> TaskPushNotificationConfig {
-        log("Setting push notification config for task: \(config.taskId)")
+        log("Setting push notification config for task: \(config.taskID)")
 
-        let params = try encodeToDict(config)
+        let params = try encodeProto(config)
         let request = buildRequest(method: "tasks/pushNotificationConfig/set", params: params)
         let processed = try await applyRequestHandlers(request)
         let response = try await transport.send(processed)
@@ -454,7 +447,7 @@ public final class A2AClient: @unchecked Sendable {
                 message: "Missing 'result' in pushNotificationConfig/set response"
             )
         }
-        return try decodeFromDict(TaskPushNotificationConfig.self, dict: result)
+        return try decodeProto(TaskPushNotificationConfig.self, from: result)
     }
 
     // MARK: - tasks/pushNotificationConfig/get
@@ -486,7 +479,7 @@ public final class A2AClient: @unchecked Sendable {
                 message: "Missing 'result' in pushNotificationConfig/get response"
             )
         }
-        return try decodeFromDict(TaskPushNotificationConfig.self, dict: result)
+        return try decodeProto(TaskPushNotificationConfig.self, from: result)
     }
 
     // MARK: - tasks/pushNotificationConfig/list
@@ -494,11 +487,11 @@ public final class A2AClient: @unchecked Sendable {
     /// Lists all push notification configurations for a given task.
     ///
     /// - Parameter taskId: The unique identifier of the task.
-    /// - Returns: A list of ``PushNotificationConfig`` objects.
+    /// - Returns: A ``ListTaskPushNotificationConfigsResponse`` containing the configs.
     /// - Throws: ``A2ATransportError`` if the server returns a JSON-RPC error.
     public func listPushNotificationConfigs(
         taskId: String
-    ) async throws -> [PushNotificationConfig] {
+    ) async throws -> ListTaskPushNotificationConfigsResponse {
         log("Listing push notification configs for task: \(taskId)")
 
         let params: [String: Any] = ["id": taskId]
@@ -510,15 +503,12 @@ public final class A2AClient: @unchecked Sendable {
         logFine("Received response from tasks/pushNotificationConfig/list")
         try throwIfError(handled)
 
-        guard let result = handled["result"] as? [String: Any],
-              let configs = result["configs"] as? [[String: Any]]
-        else {
+        guard let result = handled["result"] as? [String: Any] else {
             throw A2ATransportError.parsing(
-                message: "Missing 'result.configs' in pushNotificationConfig/list response"
+                message: "Missing 'result' in pushNotificationConfig/list response"
             )
         }
-
-        return try configs.map { try decodeFromDict(PushNotificationConfig.self, dict: $0) }
+        return try decodeProto(ListTaskPushNotificationConfigsResponse.self, from: result)
     }
 
     // MARK: - tasks/pushNotificationConfig/delete
@@ -608,24 +598,24 @@ public final class A2AClient: @unchecked Sendable {
     }
 }
 
-// MARK: - Codable ↔ [String: Any] bridging
+// MARK: - SwiftProtobuf ↔ [String: Any] bridging
 
-/// Encodes a `Codable` value into a `[String: Any]` dictionary.
+/// Encodes a SwiftProtobuf `Message` into a `[String: Any]` dictionary.
 ///
-/// Uses `JSONEncoder` → `JSONSerialization` round-trip since there is no
-/// direct Codable → Dictionary API in Foundation.
-private func encodeToDict<T: Encodable>(_ value: T) throws -> [String: Any] {
-    let data = try JSONEncoder().encode(value)
-    guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+/// Uses SwiftProtobuf's JSON encoding for spec-correct field names
+/// (camelCase, proto field name map).
+private func encodeProto<T: SwiftProtobuf.Message>(_ value: T) throws -> [String: Any] {
+    let jsonData = try value.jsonUTF8Data()
+    guard let dict = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
         throw A2ATransportError.parsing(message: "Failed to encode \(T.self) to dictionary")
     }
     return dict
 }
 
-/// Decodes a `[String: Any]` dictionary into a `Codable` value.
+/// Decodes a `[String: Any]` dictionary into a SwiftProtobuf `Message`.
 ///
-/// Uses `JSONSerialization` → `JSONDecoder` round-trip.
-private func decodeFromDict<T: Decodable>(_ type: T.Type, dict: [String: Any]) throws -> T {
-    let data = try JSONSerialization.data(withJSONObject: dict)
-    return try JSONDecoder().decode(T.self, from: data)
+/// Uses SwiftProtobuf's JSON decoding for spec-correct field name handling.
+private func decodeProto<T: SwiftProtobuf.Message>(_ type: T.Type, from dict: [String: Any]) throws -> T {
+    let jsonData = try JSONSerialization.data(withJSONObject: dict)
+    return try T(jsonUTF8Data: jsonData)
 }
