@@ -18,6 +18,28 @@ import SwiftProtobuf
 import os
 #endif
 
+// MARK: - A2AClientConfig
+
+/// Configuration options for customizing ``A2AClient`` behavior.
+///
+/// Mirrors Go's `a2aclient.Config` struct in `a2aclient/client.go`.
+public struct A2AClientConfig: Sendable {
+
+    /// Default push notification configuration applied to every `message/send` or
+    /// `message/stream` call when the request does not already specify one.
+    ///
+    /// Mirrors Go's `Config.PushConfig`.
+    public var pushNotificationConfig: TaskPushNotificationConfig?
+
+    /// MIME types passed with every message call. An agent may use these to
+    /// decide the result format.
+    ///
+    /// Mirrors Go's `Config.AcceptedOutputModes`.
+    public var acceptedOutputModes: [String] = []
+
+    public init() {}
+}
+
 // MARK: - JSON-RPC Error → A2ATransportError mapping
 
 /// Maps a JSON-RPC error dictionary to a typed ``A2ATransportError``.
@@ -34,15 +56,31 @@ private func transportError(from error: [String: Any]) -> A2ATransportError {
     let code = error["code"] as? Int ?? 0
     let message = error["message"] as? String ?? "Unknown error"
 
+    // Maps JSON-RPC error codes to typed A2ATransportError cases.
+    // Mirrors Go's `codeToError` in `a2aclient/internal/jsonrpc/jsonrpc.go`.
     switch code {
     case -32001:
         return .taskNotFound(message: message)
     case -32002:
         return .taskNotCancelable(message: message)
-    case -32006:
+    case -32003:
         return .pushNotificationNotSupported(message: message)
+    case -32004:
+        return .unsupportedOperation(message: message)
+    case -32005:
+        return .unsupportedContentType(message: message)
+    case -32006:
+        return .invalidAgentResponse(message: message)
     case -32007:
-        return .pushNotificationConfigNotFound(message: message)
+        return .extendedCardNotConfigured
+    case -32008:
+        return .extensionSupportRequired(message: message)
+    case -32009:
+        return .versionNotSupported(message: message)
+    case -31401:
+        return .unauthenticated(message: message)
+    case -31403:
+        return .unauthorized(message: message)
     default:
         return .jsonRpc(code: code, message: message)
     }
@@ -81,10 +119,24 @@ public final class A2AClient: @unchecked Sendable {
     /// An optional handler pipeline for intercepting requests/responses.
     private let handlerPipeline: A2AHandlerPipeline?
 
+    /// Client configuration (push config defaults, accepted output modes).
+    private let config: A2AClientConfig
+
+    /// An optional resolver used by ``getAgentCard()`` to customise the fetch.
+    ///
+    /// When `nil`, ``getAgentCard()`` falls back to the built-in
+    /// ``agentCardPath`` on the current transport.
+    private let cardResolver: AgentCardResolver?
+
+    /// The most recently cached ``AgentCard``, used for capability-gating.
+    ///
+    /// Protected by `lock` for thread-safe reads/writes.
+    private var _card: AgentCard?
+
     /// Auto-incrementing request ID for JSON-RPC 2.0.
     private var requestId: Int = 0
 
-    /// Lock for thread-safe `requestId` increments.
+    /// Lock for thread-safe `requestId` increments and `_card` access.
     private let lock = NSLock()
 
     #if canImport(os)
@@ -109,14 +161,37 @@ public final class A2AClient: @unchecked Sendable {
     ///     is created using the provided `url`.
     ///   - handlers: An optional list of ``A2AHandler``s to form a pipeline for
     ///     intercepting requests and responses.
+    ///   - config: Optional ``A2AClientConfig`` with default send options.
+    ///   - cardResolver: An optional ``AgentCardResolver`` used by
+    ///     ``getAgentCard()`` to customise the well-known path or attach extra
+    ///     request headers.  When `nil` (the default), ``getAgentCard()`` uses
+    ///     the built-in ``agentCardPath`` on the current transport.
     public init(
         url: String,
         transport: (any A2ATransport)? = nil,
-        handlers: [any A2AHandler] = []
+        handlers: [any A2AHandler] = [],
+        config: A2AClientConfig = A2AClientConfig(),
+        cardResolver: AgentCardResolver? = nil
     ) {
         self.url = url
         self.transport = transport ?? SseTransport(url: url)
         self.handlerPipeline = handlers.isEmpty ? nil : A2AHandlerPipeline(handlers: handlers)
+        self.config = config
+        self.cardResolver = cardResolver
+    }
+
+    // MARK: - Card Management
+
+    /// Updates the cached agent card.
+    ///
+    /// The new card is validated and stored for future capability checks
+    /// (e.g., ``getExtendedAgentCard()`` and streaming fallback).
+    ///
+    /// Mirrors Go's `Client.UpdateCard` in `a2aclient/client.go`.
+    ///
+    /// - Parameter card: The new ``AgentCard`` to cache.
+    public func updateCard(_ card: AgentCard) {
+        lock.withLock { _card = card }
     }
 
     // MARK: - Factory
@@ -159,13 +234,23 @@ public final class A2AClient: @unchecked Sendable {
 
     /// Fetches the public agent card from the server.
     ///
+    /// When a ``AgentCardResolver`` was supplied at init time, it is used to
+    /// perform the fetch (allowing a custom path and extra request headers).
+    /// Otherwise the card is retrieved from ``agentCardPath`` via the
+    /// client's transport.
+    ///
     /// The agent card contains metadata about the agent, such as its capabilities
-    /// and security schemes. Requests the card from ``agentCardPath``.
+    /// and security schemes.
     ///
     /// - Returns: An ``AgentCard`` object.
     /// - Throws: ``A2ATransportError`` if the request fails or the response is invalid.
     public func getAgentCard() async throws -> AgentCard {
         log("Fetching agent card...")
+        if let resolver = cardResolver {
+            let card = try await resolver.resolve()
+            logFine("Received agent card (via resolver)")
+            return card
+        }
         let response = try await transport.get(path: Self.agentCardPath)
         logFine("Received agent card")
         return try decodeProto(AgentCard.self, from: response)
@@ -182,12 +267,42 @@ public final class A2AClient: @unchecked Sendable {
     /// - Throws: ``A2ATransportError`` if the request fails or the response is invalid.
     public func getAuthenticatedExtendedCard(_ token: String) async throws -> AgentCard {
         log("Fetching authenticated agent card...")
+        var authParams = ServiceParams()
+        authParams.append("Authorization", "Bearer \(token)")
         let response = try await transport.get(
             path: Self.extendedAgentCardPath,
-            headers: ["Authorization": "Bearer \(token)"]
+            params: authParams
         )
         logFine("Received authenticated agent card")
-        return try decodeProto(AgentCard.self, from: response)
+        let handled = try await applyResponseHandlers(response)
+        return try decodeProto(AgentCard.self, from: handled)
+    }
+
+    // MARK: - getExtendedAgentCard (capability-gated)
+
+    /// Fetches the extended agent card, guarded by the cached card's capabilities.
+    ///
+    /// Returns ``A2ATransportError/extendedCardNotConfigured`` immediately if the
+    /// cached ``AgentCard`` has `capabilities.extendedAgentCard == false`, without
+    /// calling the transport or any handlers.
+    ///
+    /// Mirrors Go's `Client.GetExtendedAgentCard` in `a2aclient/client.go`.
+    ///
+    /// - Returns: The extended ``AgentCard``.
+    /// - Throws: ``A2ATransportError/extendedCardNotConfigured`` when capability is absent.
+    public func getExtendedAgentCard() async throws -> AgentCard {
+        let card = lock.withLock { _card }
+        if let card, !card.capabilities.extendedAgentCard {
+            throw A2ATransportError.extendedCardNotConfigured
+        }
+        log("Fetching extended agent card...")
+        let request = buildRequest(method: "getExtendedAgentCard", params: [:])
+        let (processed, _) = try await applyRequestHandlers(request)
+        let response = try await transport.get(path: Self.extendedAgentCardPath)
+        let handled = try await applyResponseHandlers(response)
+        _ = processed  // processed request passed through handlers
+        logFine("Received extended agent card")
+        return try decodeProto(AgentCard.self, from: handled)
     }
 
     // MARK: - message/send
@@ -207,20 +322,24 @@ public final class A2AClient: @unchecked Sendable {
     public func messageSend(_ message: Message) async throws -> SendMessageResponse {
         log("Sending message: \(message.messageID)")
 
-        var params: [String: Any] = ["message": try encodeProto(message)]
+        var request = SendMessageRequest()
+        request.message = message
+        request = withDefaultSendConfig(request)
+
+        var rpcParams: [String: Any] = try encodeProto(request)
         if !message.extensions.isEmpty {
-            params["extensions"] = message.extensions
+            rpcParams["extensions"] = message.extensions
         }
 
-        var headers: [String: String] = [:]
+        var serviceParams = ServiceParams()
         if !message.extensions.isEmpty {
-            headers["X-A2A-Extensions"] = message.extensions.joined(separator: ",")
+            serviceParams.append("X-A2A-Extensions", message.extensions.joined(separator: ","))
         }
 
         return try await sendRPC(
             method: "message/send",
-            params: params,
-            headers: headers,
+            params: rpcParams,
+            serviceParams: serviceParams,
             returning: SendMessageResponse.self
         )
     }
@@ -233,6 +352,9 @@ public final class A2AClient: @unchecked Sendable {
     /// The agent can send multiple updates over time. The returned stream
     /// emits ``StreamResponse`` objects as they are received, typically via SSE.
     ///
+    /// If the cached ``AgentCard`` has `capabilities.streaming == false`, the
+    /// call falls back to a single-shot `message/send` and emits one event.
+    ///
     /// - Parameter message: The ``Message`` to send.
     /// - Returns: An `AsyncThrowingStream` of ``StreamResponse`` objects.
     public func messageStream(_ message: Message) -> AsyncThrowingStream<StreamResponse, Error> {
@@ -241,23 +363,55 @@ public final class A2AClient: @unchecked Sendable {
         return AsyncThrowingStream { continuation in
             let task = _Concurrency.Task {
                 do {
-                    var params: [String: Any] = [
-                        "configuration": NSNull(),
-                        "metadata": NSNull(),
-                        "message": try encodeProto(message),
-                    ]
+                    var sendRequest = SendMessageRequest()
+                    sendRequest.message = message
+                    sendRequest = self.withDefaultSendConfig(sendRequest)
+
+                    var streamRpcParams: [String: Any] = try encodeProto(sendRequest)
                     if !message.extensions.isEmpty {
-                        params["extensions"] = message.extensions
+                        streamRpcParams["extensions"] = message.extensions
                     }
 
-                    var headers: [String: String] = [:]
+                    var streamServiceParams = ServiceParams()
                     if !message.extensions.isEmpty {
-                        headers["X-A2A-Extensions"] = message.extensions.joined(separator: ",")
+                        streamServiceParams.append("X-A2A-Extensions", message.extensions.joined(separator: ","))
                     }
 
-                    let request = self.buildRequest(method: "message/stream", params: params)
-                    let processed = try await self.applyRequestHandlers(request)
-                    let stream = self.transport.sendStream(processed, headers: headers)
+                    // Fallback: if card says no streaming, use single-shot send
+                    let card = self.lock.withLock { self._card }
+                    if let card, !card.capabilities.streaming {
+                        let rpcRequest = self.buildRequest(method: "message/send", params: streamRpcParams)
+                        let (processed, handlerParams) = try await self.applyRequestHandlers(rpcRequest)
+                        var mergedParams = streamServiceParams
+                        for (key, values) in handlerParams.asDictionary() {
+                            mergedParams.append(key, values)
+                        }
+                        let response = try await self.transport.send(processed, params: mergedParams)
+                        let handled = try await self.applyResponseHandlers(response)
+                        try self.throwIfError(handled)
+                        guard let result = handled["result"] as? [String: Any] else {
+                            throw A2ATransportError.parsing(message: "Missing 'result' in message/send response")
+                        }
+                        let sendResp = try decodeProto(SendMessageResponse.self, from: result)
+                        // Wrap the SendMessageResponse in a StreamResponse
+                        var streamResp = StreamResponse()
+                        switch sendResp.payload {
+                        case .task(let t): streamResp.task = t
+                        case .message(let m): streamResp.message = m
+                        case nil: break
+                        }
+                        continuation.yield(streamResp)
+                        continuation.finish()
+                        return
+                    }
+
+                    let rpcRequest = self.buildRequest(method: "message/stream", params: streamRpcParams)
+                    let (processed, handlerParams) = try await self.applyRequestHandlers(rpcRequest)
+                    var mergedStreamParams = streamServiceParams
+                    for (key, values) in handlerParams.asDictionary() {
+                        mergedStreamParams.append(key, values)
+                    }
+                    let stream = self.transport.sendStream(processed, params: mergedStreamParams)
 
                     for try await data in stream {
                         let handled = try await self.applyResponseHandlers(data)
@@ -350,7 +504,7 @@ public final class A2AClient: @unchecked Sendable {
                         method: "tasks/subscribe",
                         params: ["id": taskId]
                     )
-                    let processed = try await self.applyRequestHandlers(request)
+                    let (processed, _) = try await self.applyRequestHandlers(request)
                     let stream = self.transport.sendStream(processed)
 
                     for try await data in stream {
@@ -471,17 +625,45 @@ public final class A2AClient: @unchecked Sendable {
     // MARK: - Private Helpers
 
     /// Executes a unary JSON-RPC call and decodes the `result` field into `T`.
+    ///
+    /// When the handler pipeline signals an early return (by returning a dict
+    /// containing ``A2AHandlerPipeline/earlyResponseKey``), the transport is
+    /// skipped and the canned response (which has already been processed by the
+    /// response phase of all executed handlers) is used directly.
     @discardableResult
     private func sendRPC<T: SwiftProtobuf.Message>(
         method: String,
         params: [String: Any],
-        headers: [String: String] = [:],
+        serviceParams: ServiceParams = ServiceParams(),
         returning type: T.Type
     ) async throws -> T {
         let request = buildRequest(method: method, params: params)
-        let processed = try await applyRequestHandlers(request)
-        let response = try await transport.send(processed, headers: headers)
-        let handled = try await applyResponseHandlers(response)
+        let card = lock.withLock { _card }
+        let reqContext = A2ARequest(method: method, baseURL: url, card: card, params: params, rawRequest: request, serviceParams: serviceParams)
+        let (processed, handlerParams) = try await applyRequestHandlers(request, context: reqContext)
+
+        // Merge caller serviceParams with any params injected by handlers (handlers win).
+        var mergedParams = serviceParams
+        for (key, values) in handlerParams.asDictionary() {
+            mergedParams.append(key, values)
+        }
+
+        let handled: [String: Any]
+        if let earlyResponse = processed[A2AHandlerPipeline.earlyResponseKey] as? [String: Any] {
+            // Pipeline already ran the response phase for executed handlers; skip transport.
+            handled = earlyResponse
+        } else {
+            let response = try await transport.send(processed, params: mergedParams)
+            let responseError = (response["error"] as? [String: Any]).map { transportError(from: $0) }
+            let respContext = A2AResponse(
+                method: method, baseURL: url, card: card,
+                error: responseError,
+                result: response["result"] as? [String: Any],
+                rawResponse: response
+            )
+            handled = try await applyResponseHandlers(response, context: respContext)
+        }
+
         logFine("Received response from \(method)")
         try throwIfError(handled)
         guard let result = handled["result"] as? [String: Any] else {
@@ -494,12 +676,34 @@ public final class A2AClient: @unchecked Sendable {
     private func sendRPC(
         method: String,
         params: [String: Any],
-        headers: [String: String] = [:]
+        serviceParams: ServiceParams = ServiceParams()
     ) async throws {
         let request = buildRequest(method: method, params: params)
-        let processed = try await applyRequestHandlers(request)
-        let response = try await transport.send(processed, headers: headers)
-        let handled = try await applyResponseHandlers(response)
+        let card = lock.withLock { _card }
+        let reqContext = A2ARequest(method: method, baseURL: url, card: card, params: params, rawRequest: request, serviceParams: serviceParams)
+        let (processed, handlerParams) = try await applyRequestHandlers(request, context: reqContext)
+
+        // Merge caller serviceParams with any params injected by handlers (handlers win).
+        var mergedParams = serviceParams
+        for (key, values) in handlerParams.asDictionary() {
+            mergedParams.append(key, values)
+        }
+
+        let handled: [String: Any]
+        if let earlyResponse = processed[A2AHandlerPipeline.earlyResponseKey] as? [String: Any] {
+            handled = earlyResponse
+        } else {
+            let response = try await transport.send(processed, params: mergedParams)
+            let responseError = (response["error"] as? [String: Any]).map { transportError(from: $0) }
+            let respContext = A2AResponse(
+                method: method, baseURL: url, card: card,
+                error: responseError,
+                result: response["result"] as? [String: Any],
+                rawResponse: response
+            )
+            handled = try await applyResponseHandlers(response, context: respContext)
+        }
+
         logFine("Received response from \(method)")
         try throwIfError(handled)
     }
@@ -513,6 +717,29 @@ public final class A2AClient: @unchecked Sendable {
         return id
     }
 
+    /// Injects client-level defaults (push notification config, accepted output
+    /// modes) into a ``SendMessageRequest`` when the request does not already
+    /// specify them.
+    ///
+    /// Mirrors Go's `Client.withDefaultSendConfig` in `a2aclient/client.go`.
+    private func withDefaultSendConfig(_ request: SendMessageRequest) -> SendMessageRequest {
+        guard config.pushNotificationConfig != nil || !config.acceptedOutputModes.isEmpty else {
+            return request
+        }
+        var result = request
+        if !result.hasConfiguration {
+            result.configuration = SendMessageConfiguration()
+        }
+        if !result.configuration.hasTaskPushNotificationConfig,
+           let pushCfg = config.pushNotificationConfig {
+            result.configuration.taskPushNotificationConfig = pushCfg
+        }
+        if result.configuration.acceptedOutputModes.isEmpty {
+            result.configuration.acceptedOutputModes = config.acceptedOutputModes
+        }
+        return result
+    }
+
     /// Builds a JSON-RPC 2.0 request dictionary.
     private func buildRequest(method: String, params: [String: Any]) -> [String: Any] {
         return [
@@ -524,15 +751,20 @@ public final class A2AClient: @unchecked Sendable {
     }
 
     /// Applies the handler pipeline to a request, if configured.
-    private func applyRequestHandlers(_ request: [String: Any]) async throws -> [String: Any] {
-        guard let pipeline = handlerPipeline else { return request }
-        return try await pipeline.handleRequest(request)
+    private func applyRequestHandlers(
+        _ request: [String: Any],
+        context: A2ARequest? = nil
+    ) async throws -> (request: [String: Any], serviceParams: ServiceParams) {
+        guard let pipeline = handlerPipeline else {
+            return (request, context?.serviceParams ?? ServiceParams())
+        }
+        return try await pipeline.handleRequest(request, context: context)
     }
 
     /// Applies the handler pipeline to a response, if configured.
-    private func applyResponseHandlers(_ response: [String: Any]) async throws -> [String: Any] {
+    private func applyResponseHandlers(_ response: [String: Any], context: A2AResponse? = nil) async throws -> [String: Any] {
         guard let pipeline = handlerPipeline else { return response }
-        return try await pipeline.handleResponse(response)
+        return try await pipeline.handleResponse(response, context: context)
     }
 
     /// Throws an ``A2ATransportError`` if the response contains an `error` key.

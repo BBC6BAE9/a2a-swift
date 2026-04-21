@@ -30,9 +30,9 @@ import os
 ///
 /// ### Inheritance
 ///
-/// - `get(path:headers:)` → inherited from ``HttpTransport``
-/// - `send(_:path:headers:)` → inherited from ``HttpTransport``
-/// - `sendStream(_:headers:)` → overridden here to use SSE via `URLSession.bytes`
+/// - `get(path:params:)` → inherited from ``HttpTransport``
+/// - `send(_:path:params:)` → inherited from ``HttpTransport``
+/// - `sendStream(_:params:)` → overridden here to use SSE via `URLSession.bytes`
 /// - `close()` → inherited from ``HttpTransport``
 public final class SseTransport: HttpTransport, @unchecked Sendable {
 
@@ -42,14 +42,14 @@ public final class SseTransport: HttpTransport, @unchecked Sendable {
     ///
     /// - Parameters:
     ///   - url: The base URL of the A2A server.
-    ///   - authHeaders: Optional additional headers for every request.
+    ///   - authParams: Optional service params (e.g. auth headers) for every request.
     ///   - session: Optional `URLSession` for custom configurations or testing.
     public override init(
         url: String,
-        authHeaders: [String: String] = [:],
+        authParams: ServiceParams = ServiceParams(),
         session: URLSession = .shared
     ) {
-        super.init(url: url, authHeaders: authHeaders, session: session)
+        super.init(url: url, authParams: authParams, session: session)
     }
 
     // MARK: - sendStream override
@@ -61,18 +61,18 @@ public final class SseTransport: HttpTransport, @unchecked Sendable {
     ///
     /// - Parameters:
     ///   - request: The JSON-RPC request body.
-    ///   - headers: Optional additional headers for this request.
+    ///   - params: Optional additional ``ServiceParams`` for this request.
     /// - Returns: An `AsyncThrowingStream` of JSON objects, one per SSE event.
     public override func sendStream(
         _ request: [String: Any],
-        headers: [String: String] = [:]
+        params: ServiceParams = ServiceParams()
     ) -> AsyncThrowingStream<[String: Any], Error> {
         // Use makeStream() to avoid sending-closure data race diagnostics.
         let (stream, continuation) = AsyncThrowingStream<[String: Any], Error>.makeStream()
 
         // Capture all values we need so the Task closure only touches Sendable locals.
         let capturedURL = url
-        let capturedAuthHeaders = authHeaders
+        let capturedAuthParams = authParams
         let capturedSession = session
         let parser = sseParser
 
@@ -88,13 +88,18 @@ public final class SseTransport: HttpTransport, @unchecked Sendable {
         }
 
         // Merge headers eagerly.
-        var allHeaders = [
+        var baseParams = ServiceParams([
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
-        ]
-        allHeaders.merge(capturedAuthHeaders) { _, new in new }
-        allHeaders.merge(headers) { _, new in new }
-        let finalHeaders = allHeaders
+        ])
+        for (k, vals) in capturedAuthParams.asDictionary() {
+            baseParams.append(k, vals)
+        }
+        var finalHeadersDict = baseParams.asHTTPHeaders()
+        for (k, v) in params.asHTTPHeaders() {
+            finalHeadersDict[k] = v
+        }
+        let finalHeaders = finalHeadersDict
 
         #if canImport(os)
         let log = logger

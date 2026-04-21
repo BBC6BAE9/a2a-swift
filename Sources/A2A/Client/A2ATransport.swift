@@ -33,10 +33,11 @@ import Foundation
 /// which deals with parsed A2UI messages and text streams.
 public protocol A2ATransport: Sendable {
 
-    /// Optional additional headers to be added to every request.
+    /// Optional additional service parameters (e.g. auth headers) added to every request.
     ///
     /// Typically used for authentication tokens or API keys.
-    var authHeaders: [String: String] { get }
+    /// Mirrors Go's per-transport auth injection pattern.
+    var authParams: ServiceParams { get }
 
     /// Fetches a resource from the server using an HTTP GET request.
     ///
@@ -45,10 +46,10 @@ public protocol A2ATransport: Sendable {
     ///
     /// - Parameters:
     ///   - path: The path appended to the base URL of the transport.
-    ///   - headers: Optional additional headers for this request.
+    ///   - params: Optional additional ``ServiceParams`` for this request.
     /// - Returns: The JSON-decoded response body.
     /// - Throws: ``A2ATransportError`` if the request fails.
-    func get(path: String, headers: [String: String]) async throws -> [String: Any]
+    func get(path: String, params: ServiceParams) async throws -> [String: Any]
 
     /// Sends a single JSON-RPC request to the server, expecting a single response.
     ///
@@ -57,10 +58,10 @@ public protocol A2ATransport: Sendable {
     /// - Parameters:
     ///   - request: The JSON-RPC request body.
     ///   - path: The endpoint path (defaults to empty string, appended to base URL).
-    ///   - headers: Optional additional headers for this request.
+    ///   - params: Optional additional ``ServiceParams`` for this request.
     /// - Returns: The JSON-decoded response body.
     /// - Throws: ``A2ATransportError`` if the request fails.
-    func send(_ request: [String: Any], path: String, headers: [String: String]) async throws -> [String: Any]
+    func send(_ request: [String: Any], path: String, params: ServiceParams) async throws -> [String: Any]
 
     /// Sends a JSON-RPC request to the server and initiates a stream of responses.
     ///
@@ -69,9 +70,9 @@ public protocol A2ATransport: Sendable {
     ///
     /// - Parameters:
     ///   - request: The JSON-RPC request body.
-    ///   - headers: Optional additional headers for this request.
+    ///   - params: Optional additional ``ServiceParams`` for this request.
     /// - Returns: An `AsyncThrowingStream` of JSON objects received from the server.
-    func sendStream(_ request: [String: Any], headers: [String: String]) -> AsyncThrowingStream<[String: Any], Error>
+    func sendStream(_ request: [String: Any], params: ServiceParams) -> AsyncThrowingStream<[String: Any], Error>
 
     /// Closes the transport and releases any underlying resources.
     ///
@@ -83,28 +84,28 @@ public protocol A2ATransport: Sendable {
 
 extension A2ATransport {
 
-    /// Convenience overload with default empty headers.
+    /// Convenience overload with default empty params.
     public func get(path: String) async throws -> [String: Any] {
-        try await get(path: path, headers: [:])
+        try await get(path: path, params: ServiceParams())
     }
 
-    /// Convenience overload with default path and headers.
+    /// Convenience overload with default path and params.
     public func send(_ request: [String: Any]) async throws -> [String: Any] {
-        try await send(request, path: "", headers: [:])
+        try await send(request, path: "", params: ServiceParams())
     }
 
     /// Convenience overload with default path.
     public func send(_ request: [String: Any], path: String) async throws -> [String: Any] {
-        try await send(request, path: path, headers: [:])
+        try await send(request, path: path, params: ServiceParams())
     }
 
-    /// Convenience overload with default headers.
-    public func send(_ request: [String: Any], headers: [String: String]) async throws -> [String: Any] {
-        try await send(request, path: "", headers: headers)
+    /// Convenience overload with default params (ServiceParams).
+    public func send(_ request: [String: Any], params: ServiceParams) async throws -> [String: Any] {
+        try await send(request, path: "", params: params)
     }
 
-    /// Convenience overload with default headers.
+    /// Convenience overload with default params.
     public func sendStream(_ request: [String: Any]) -> AsyncThrowingStream<[String: Any], Error> {
-        sendStream(request, headers: [:])
+        sendStream(request, params: ServiceParams())
     }
 }

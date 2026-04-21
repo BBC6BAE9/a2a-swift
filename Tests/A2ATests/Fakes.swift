@@ -14,152 +14,156 @@
 
 import Foundation
 @testable import A2A
-// MARK: - FakeTransport
 
-/// A fake ``A2ATransport`` for use in tests.
+// MARK: - TestTransport
+
+/// A configurable fake transport for unit tests.
 ///
-/// Thread-safe via NSLock; marked `@unchecked Sendable` because
-/// `[String: Any]` is not `Sendable` in Swift 6, but all mutations are
-/// protected by the lock.
+/// Each method dispatches to a corresponding closure field (e.g. `sendFn`).
+/// Tests set these fields to control what the transport returns, capturing
+/// call arguments as a side-effect. Mirrors Go's `testTransport` struct from
+/// `a2aclient/client_test.go`.
 ///
-/// Events added via `addEvent(_:)` before `sendStream(_:)` is called are
-/// buffered and flushed automatically when the continuation is installed.
-/// This matches the Dart FakeTransport behaviour and allows the ExampleTests
-/// pattern of pre-queuing all events before consuming the stream.
-///
-/// Mirrors Dart `FakeTransport` in `test/a2a/fakes.dart`.
-final class FakeTransport: A2ATransport, @unchecked Sendable {
+/// All captured state is protected by a lock so tests can read it from the
+/// main actor without data races.
+final class TestTransport: A2ATransport, @unchecked Sendable {
+
+    // MARK: - Closure fields (set by each test)
+
+    var getFn: ((String, ServiceParams) async throws -> [String: Any])?
+    var sendFn: (([String: Any], String, ServiceParams) async throws -> [String: Any])?
+    var sendStreamFn: (([String: Any], ServiceParams) -> AsyncThrowingStream<[String: Any], Error>)?
+
+    // MARK: - Captured call arguments (readable by tests)
+
+    private let _lock = NSLock()
+
+    private var _sendRequests: [[String: Any]] = []
+    private var _sendStreamRequests: [[String: Any]] = []
+    private var _sentParams: [ServiceParams] = []
+
+    /// All requests passed to `send(_:path:params:)` in call order.
+    var sendRequests: [[String: Any]] { _lock.withLock { _sendRequests } }
+    /// All requests passed to `sendStream(_:params:)` in call order.
+    var sendStreamRequests: [[String: Any]] { _lock.withLock { _sendStreamRequests } }
+    /// ServiceParams passed to each `send` call.
+    var sentParams: [ServiceParams] { _lock.withLock { _sentParams } }
 
     // MARK: - A2ATransport
 
-    let authHeaders: [String: String]
+    var authParams: ServiceParams { ServiceParams() }
 
-    // MARK: - State (protected by _lock)
-
-    private let _lock = NSLock()
-    private var _requests: [[String: Any]] = []
-    private var _streamRequests: [[String: Any]] = []
-    private var _response: [String: Any]
-    /// Optional queue of responses to return in order; falls back to _response when empty.
-    private var _responseQueue: [[String: Any]]
-    private var _continuation: AsyncThrowingStream<[String: Any], Error>.Continuation?
-    /// Events buffered before sendStream() is called.
-    private var _pendingEvents: [[String: Any]] = []
-    /// Whether finishStream() was called before sendStream().
-    private var _pendingFinish: Bool = false
-
-    var requests: [[String: Any]] { _lock.withLock { _requests } }
-    var streamRequests: [[String: Any]] { _lock.withLock { _streamRequests } }
-    var response: [String: Any] {
-        get { _lock.withLock { _response } }
-        set { _lock.withLock { _response = newValue } }
-    }
-
-    // MARK: - Init
-
-    init(
-        response: [String: Any] = [:],
-        responses: [[String: Any]] = [],
-        authHeaders: [String: String] = [:]
-    ) {
-        self._response = response
-        self._responseQueue = responses
-        self.authHeaders = authHeaders
-    }
-
-    // MARK: - A2ATransport conformance
-
-    func get(path: String, headers: [String: String] = [:]) async throws -> [String: Any] {
-        try jsonRoundTrip(_lock.withLock { _response })
+    func get(path: String, params: ServiceParams = ServiceParams()) async throws -> [String: Any] {
+        guard let fn = getFn else {
+            throw TestError.notImplemented("TestTransport.get not configured")
+        }
+        return try await fn(path, params)
     }
 
     func send(
         _ request: [String: Any],
         path: String = "",
-        headers: [String: String] = [:]
+        params: ServiceParams = ServiceParams()
     ) async throws -> [String: Any] {
-        let resp = _lock.withLock { () -> [String: Any] in
-            _requests.append(request)
-            if !_responseQueue.isEmpty {
-                return _responseQueue.removeFirst()
-            }
-            return _response
+        _lock.withLock {
+            _sendRequests.append(request)
+            _sentParams.append(params)
         }
-        return try jsonRoundTrip(resp)
+        guard let fn = sendFn else {
+            throw TestError.notImplemented("TestTransport.send not configured")
+        }
+        return try await fn(request, path, params)
     }
 
     func sendStream(
         _ request: [String: Any],
-        headers: [String: String] = [:]
+        params: ServiceParams = ServiceParams()
     ) -> AsyncThrowingStream<[String: Any], Error> {
-        let (stream, continuation) = AsyncThrowingStream<[String: Any], Error>.makeStream()
-
-        // Flush buffered events, then set the live continuation.
-        let (buffered, shouldFinish) = _lock.withLock { () -> ([[String: Any]], Bool) in
-            _streamRequests.append(request)
-            _continuation = continuation
-            let b = _pendingEvents
-            let f = _pendingFinish
-            _pendingEvents = []
-            _pendingFinish = false
-            return (b, f)
+        _lock.withLock { _sendStreamRequests.append(request) }
+        guard let fn = sendStreamFn else {
+            return AsyncThrowingStream { $0.finish(throwing: TestError.notImplemented("TestTransport.sendStream not configured")) }
         }
-
-        for event in buffered {
-            nonisolated(unsafe) let e = event
-            continuation.yield(e)
-        }
-        if shouldFinish {
-            _lock.withLock { _continuation = nil }
-            continuation.finish()
-        }
-
-        return stream
+        return fn(request, params)
     }
 
-    func close() {
-        let c = _lock.withLock { () -> AsyncThrowingStream<[String: Any], Error>.Continuation? in
-            let c = _continuation; _continuation = nil; return c
+    func close() {}
+}
+
+// MARK: - TestHandler
+
+/// A configurable handler for unit tests.
+///
+/// Captures the last request and response seen by its hooks, and dispatches
+/// to optional closure overrides. Mirrors Go's `testInterceptor` struct from
+/// `a2aclient/client_test.go`.
+final class TestHandler: A2AHandler, @unchecked Sendable {
+
+    // MARK: - Captured values
+
+    private let _lock = NSLock()
+    private var _lastRequest: [String: Any]?
+    private var _lastResponse: [String: Any]?
+
+    /// The most recent request seen by `handleRequest(_:)`.
+    var lastRequest: [String: Any]? { _lock.withLock { _lastRequest } }
+    /// The most recent response seen by `handleResponse(_:)`.
+    var lastResponse: [String: Any]? { _lock.withLock { _lastResponse } }
+
+    // MARK: - Closure fields
+
+    var handleRequestFn: (([String: Any]) async throws -> [String: Any])?
+    var handleResponseFn: (([String: Any]) async throws -> [String: Any])?
+
+    // MARK: - A2AHandler
+
+    func handleRequest(_ request: [String: Any]) async throws -> [String: Any] {
+        _lock.withLock { _lastRequest = request }
+        if let fn = handleRequestFn {
+            return try await fn(request)
         }
-        c?.finish()
+        return request
     }
 
-    // MARK: - Test helpers
-
-    func addEvent(_ event: [String: Any]) {
-        let c = _lock.withLock { () -> AsyncThrowingStream<[String: Any], Error>.Continuation? in
-            if _continuation == nil {
-                // sendStream not yet called — buffer the event.
-                _pendingEvents.append(event)
-                return nil
-            }
-            return _continuation
+    func handleResponse(_ response: [String: Any]) async throws -> [String: Any] {
+        _lock.withLock { _lastResponse = response }
+        if let fn = handleResponseFn {
+            return try await fn(response)
         }
-        if let c {
-            nonisolated(unsafe) let e = event
-            c.yield(e)
-        }
-    }
-
-    func finishStream() {
-        let c = _lock.withLock { () -> AsyncThrowingStream<[String: Any], Error>.Continuation? in
-            if _continuation == nil {
-                // sendStream not yet called — remember to finish when it is.
-                _pendingFinish = true
-                return nil
-            }
-            let c = _continuation; _continuation = nil; return c
-        }
-        c?.finish()
+        return response
     }
 }
 
-// MARK: - JSON round-trip helper
+// MARK: - TestError
 
-func jsonRoundTrip(_ value: [String: Any]) throws -> [String: Any] {
-    let data = try JSONSerialization.data(withJSONObject: value)
-    guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-        throw A2ATransportError.parsing(message: "jsonRoundTrip: result is not a dictionary")
+enum TestError: Error, Equatable {
+    case notImplemented(String)
+    case custom(String)
+}
+
+// MARK: - Stream helpers
+
+/// Collects all events from an AsyncThrowingStream into an array.
+func drainStream<T>(_ stream: AsyncThrowingStream<T, Error>) async throws -> [T] {
+    var result: [T] = []
+    for try await event in stream {
+        result.append(event)
     }
-    return dict
+    return result
+}
+
+/// Creates an AsyncThrowingStream that emits the given dictionaries then finishes.
+func makeStream(events: [[String: Any]]) -> AsyncThrowingStream<[String: Any], Error> {
+    AsyncThrowingStream { continuation in
+        for event in events {
+            continuation.yield(event)
+        }
+        continuation.finish()
+    }
+}
+
+/// Creates an AsyncThrowingStream that finishes with an error.
+func makeErrorStream(error: Error) -> AsyncThrowingStream<[String: Any], Error> {
+    AsyncThrowingStream { continuation in
+        continuation.finish(throwing: error)
+    }
 }

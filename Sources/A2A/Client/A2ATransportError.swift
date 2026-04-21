@@ -49,6 +49,61 @@ public enum A2ATransportError: Error, Sendable, Equatable {
     /// Push notification configuration was not found.
     case pushNotificationConfigNotFound(message: String)
 
+    /// The server does not support the extended agent card capability.
+    ///
+    /// Returned by ``A2AClient/getExtendedAgentCard()`` when the cached
+    /// ``AgentCard`` has `capabilities.extendedAgentCard == false`.
+    ///
+    /// Mirrors Go's `a2a.ErrExtendedCardNotConfigured` in
+    /// `a2aclient/client.go`.
+    case extendedCardNotConfigured
+
+    /// The A2A protocol version specified in the request is not supported by the server.
+    ///
+    /// JSON-RPC error code: `-32009`.
+    ///
+    /// Mirrors Go's `a2a.ErrVersionNotSupported`.
+    case versionNotSupported(message: String)
+
+    /// The client requested use of an extension marked as required, but the server
+    /// does not support that extension.
+    ///
+    /// JSON-RPC error code: `-32008`.
+    ///
+    /// Mirrors Go's `a2a.ErrExtensionSupportRequired`.
+    case extensionSupportRequired(message: String)
+
+    /// The request does not have valid authentication credentials (HTTP 401).
+    ///
+    /// JSON-RPC error code: `-31401`.
+    ///
+    /// Mirrors Go's `a2a.ErrUnauthenticated`.
+    case unauthenticated(message: String)
+
+    /// The caller does not have permission to execute the specified operation (HTTP 403).
+    ///
+    /// JSON-RPC error code: `-31403`.
+    ///
+    /// Mirrors Go's `a2a.ErrUnauthorized`.
+    case unauthorized(message: String)
+
+    /// There is an incompatibility between the requested and supported content types (HTTP 415).
+    ///
+    /// JSON-RPC error code: `-32005`.
+    ///
+    /// Mirrors Go's `a2a.ErrUnsupportedContentType`.
+    case unsupportedContentType(message: String)
+
+    /// The agent returned a response that does not conform to the A2A protocol.
+    ///
+    /// For example, an execution that finished without producing any events,
+    /// or an unexpected event type in a streaming response.
+    ///
+    /// JSON-RPC error code: `-32006`.
+    ///
+    /// Mirrors Go's `a2a.ErrInvalidAgentResponse`.
+    case invalidAgentResponse(message: String)
+
     // MARK: Transport-Level Errors
 
     /// An HTTP request failed with a non-2xx status code.
@@ -89,6 +144,20 @@ extension A2ATransportError: LocalizedError {
             return "Push notification not supported: \(message)"
         case .pushNotificationConfigNotFound(let message):
             return "Push notification config not found: \(message)"
+        case .extendedCardNotConfigured:
+            return "Extended agent card is not configured"
+        case .versionNotSupported(let message):
+            return "Version not supported: \(message)"
+        case .extensionSupportRequired(let message):
+            return "Extension support required: \(message)"
+        case .unauthenticated(let message):
+            return "Unauthenticated: \(message)"
+        case .unauthorized(let message):
+            return "Unauthorized: \(message)"
+        case .unsupportedContentType(let message):
+            return "Unsupported content type: \(message)"
+        case .invalidAgentResponse(let message):
+            return "Invalid agent response: \(message)"
         case .http(let statusCode, let reason):
             return "HTTP error \(statusCode)\(reason.map { ": \($0)" } ?? "")"
         case .network(let message):
