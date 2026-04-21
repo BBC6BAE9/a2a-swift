@@ -14,7 +14,9 @@
 
 import Foundation
 import Testing
-@testable import A2A
+@testable import A2AClient
+import A2ACore
+@testable import A2AServer
 
 // MARK: - Helpers
 

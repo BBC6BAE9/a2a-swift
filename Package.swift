@@ -14,8 +14,16 @@ let package = Package(
     ],
     products: [
         .library(
-            name: "A2A",
-            targets: ["A2A"]
+            name: "A2AClient",
+            targets: ["A2AClient"]
+        ),
+        .library(
+            name: "A2AServer",
+            targets: ["A2AServer"]
+        ),
+        .library(
+            name: "A2ACore",
+            targets: ["A2ACore"]
         ),
     ],
     dependencies: [
@@ -26,18 +34,37 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "A2A",
+            name: "A2ACore",
             dependencies: [
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
             ],
-            path: "Sources/A2A",
+            path: "Sources/A2ACore"
+        ),
+        .target(
+            name: "A2AClient",
+            dependencies: [
+                "A2ACore",
+                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+            ],
+            path: "Sources/A2AClient",
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency"),
+            ]
+        ),
+        .target(
+            name: "A2AServer",
+            dependencies: [
+                "A2ACore",
+                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+            ],
+            path: "Sources/A2AServer",
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),
             ]
         ),
         .testTarget(
             name: "A2ATests",
-            dependencies: ["A2A"],
+            dependencies: ["A2AClient", "A2AServer"],
             path: "Tests/A2ATests"
         ),
     ]
